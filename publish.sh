@@ -9,6 +9,7 @@
 set -e
 cd "$(dirname "$0")"
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+export GIT_TERMINAL_PROMPT=0   # fail fast instead of hanging if git credentials are unavailable
 
 ts="$(date '+%Y-%m-%d %H:%M:%S')"
 echo "[$ts] fetch + render"
@@ -22,6 +23,6 @@ cp liquidation-map.html "$pub/index.html"
 git -C "$pub" init -q
 git -C "$pub" add -A
 git -C "$pub" -c user.email="liqmap@local" -c user.name="liqmap-bot" commit -qm "publish $ts"
-git -C "$pub" push -qf "$remote" HEAD:gh-pages
+git -C "$pub" -c credential.helper='!gh auth git-credential' push -qf "$remote" HEAD:gh-pages
 rm -rf "$pub"
 echo "[$ts] published OK"

@@ -8,6 +8,7 @@
 import yaml from 'js-yaml';
 import { readFileSync, writeFileSync } from 'fs';
 import { buildMap } from './lib/model.mjs';
+import { buildBacktest } from './lib/backtest.mjs';
 
 const config = yaml.load(readFileSync(new URL('./config.yml', import.meta.url), 'utf8'));
 const { fetchedAt, tokens, errors = [] } = JSON.parse(readFileSync(new URL('./data.json', import.meta.url), 'utf8'));
@@ -25,10 +26,22 @@ const fmtUsd = (n) => {
 const fmtPrice = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: n < 100 ? 2 : 0 });
 const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// cumulative liquidation notional from the price line outward, per displayed bin.
+// cumLong rises as price falls (longs), cumShort rises as price rises (shorts).
+function cumulativeVolume(map) {
+  const nB = map.bins.length;
+  const cumLong = new Array(nB).fill(0), cumShort = new Array(nB).fill(0);
+  let accL = 0;
+  for (let i = nB - 1; i >= 0; i--) { if (map.bins[i].price < map.price) accL += map.bins[i].totalLong || 0; cumLong[i] = accL; }
+  let accS = 0;
+  for (let i = 0; i < nB; i++) { if (map.bins[i].price >= map.price) accS += map.bins[i].totalShort || 0; cumShort[i] = accS; }
+  return { cumLong, cumShort, sumLong: accL, sumShort: accS, cumMax: Math.max(1, ...cumLong, ...cumShort) };
+}
+
 // ===== SVG map for one token =====
 function renderSvg(token, map) {
   const W = 1200, H = 560;
-  const ML = 74, MR = 24, MT = 30, MB = 54;
+  const ML = 74, MR = 58, MT = 30, MB = 54;   // MR holds the cumulative-volume axis gutter
   const plotW = W - ML - MR;
   const plotH = H - MT - MB;
   const x0 = ML, y0 = MT, yBot = MT + plotH;
@@ -72,6 +85,30 @@ function renderSvg(token, map) {
     }
   }
 
+  // cumulative liquidation volume vs price — running total of notional from the price line
+  // outward (longs leftward as price falls, shorts rightward as price rises). Own right axis.
+  const { cumLong, cumShort, cumMax } = cumulativeVolume(map);
+  const nB = map.bins.length;
+  const yOfCum = (v) => yBot - (v / cumMax) * plotH;
+  let longPts = '';
+  for (let i = 0; i < nB; i++) if (map.bins[i].price < map.price) longPts += `${xOf(map.bins[i].price).toFixed(1)},${yOfCum(cumLong[i]).toFixed(1)} `;
+  longPts += `${px.toFixed(1)},${yBot.toFixed(1)}`;
+  let shortPts = `${px.toFixed(1)},${yBot.toFixed(1)} `;
+  for (let i = 0; i < nB; i++) if (map.bins[i].price >= map.price) shortPts += `${xOf(map.bins[i].price).toFixed(1)},${yOfCum(cumShort[i]).toFixed(1)} `;
+  const cumLine =
+    `<polyline points="${longPts}" fill="none" stroke="#0e1118" stroke-width="3.6" stroke-linejoin="round" opacity="0.55"/>` +
+    `<polyline points="${shortPts.trim()}" fill="none" stroke="#0e1118" stroke-width="3.6" stroke-linejoin="round" opacity="0.55"/>` +
+    `<polyline points="${longPts}" fill="none" stroke="#f0f3f8" stroke-width="2" stroke-linejoin="round"/>` +
+    `<polyline points="${shortPts.trim()}" fill="none" stroke="#f0f3f8" stroke-width="2" stroke-linejoin="round"/>`;
+  // right axis for the cumulative curve ("cumul." header sits above the plot to avoid the top tick)
+  let rAxis = `<text x="${(x0 + plotW + 6).toFixed(1)}" y="${(y0 - 6).toFixed(1)}" fill="#aeb4c0" font-size="9" font-weight="600">cumul.</text>`;
+  const NRY = 4;
+  for (let i = 1; i < NRY; i++) {   // skip the top tick (i=NRY) — it sits under the "cumul." header; max shown in stats
+    const v = (i / NRY) * cumMax, yy = yOfCum(v);
+    rAxis += `<line x1="${(x0 + plotW).toFixed(1)}" y1="${yy.toFixed(1)}" x2="${(x0 + plotW + 4).toFixed(1)}" y2="${yy.toFixed(1)}" stroke="#3a4152"/>` +
+      `<text x="${(x0 + plotW + 7).toFixed(1)}" y="${(yy + 3).toFixed(1)}" fill="#aeb4c0" font-size="9" text-anchor="start">${escapeHtml(fmtUsd(v))}</text>`;
+  }
+
   // x ticks
   let xticks = '';
   const NX = 8;
@@ -88,7 +125,125 @@ function renderSvg(token, map) {
     `<text x="${px.toFixed(1)}" y="${(y0 - 6).toFixed(1)}" fill="#e6e9ef" font-size="12" font-weight="700" text-anchor="middle">${escapeHtml(fmtPrice(map.price))}</text>`;
 
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" class="liqmap" data-token="${escapeHtml(token)}">` +
-    zones + yticks + bars + xticks + priceLine + `</svg>`;
+    zones + yticks + bars + cumLine + xticks + priceLine + rAxis + `</svg>`;
+}
+
+// ===== reality-check panel: model walls vs ACTUAL OI destruction, in offset space (% from price) =====
+function renderBacktestSvg(bt, token) {
+  const W = 1200, H = 300;
+  const ML = 74, MR = 24, MT = 24, MB = 40;
+  const plotW = W - ML - MR, plotH = H - MT - MB;
+  const x0 = ML, y0 = MT, yBot = MT + plotH;
+  const lo = -bt.downSpan, hi = bt.upSpan;
+  const xOf = (off) => x0 + ((off - lo) / (hi - lo)) * plotW;
+  const px = xOf(0);
+  const yOf = (v, max) => yBot - (max > 0 ? Math.max(0, v) / max : 0) * plotH;
+
+  // light display smoothing so the gray "resting" silhouette reads as a soft mountain, not jagged noise
+  const smoothDisp = (arr, sig) => {
+    const r = Math.max(1, Math.ceil(sig * 3)), k = [];
+    for (let d = -r; d <= r; d++) k.push(Math.exp(-(d * d) / (2 * sig * sig)));
+    return arr.map((_, i) => { let a = 0, w = 0; for (let d = -r; d <= r; d++) { const j = i + d; if (j < 0 || j >= arr.length) continue; a += arr[j] * k[d + r]; w += k[d + r]; } return w > 0 ? a / w : 0; });
+  };
+  const sumArr = (a, b) => a.map((x, i) => x + b[i]);
+  const adjL = bt.adjLong, adjS = bt.adjShort;
+  const resting = smoothDisp(sumArr(bt.modelLong, bt.modelShort), 4);
+  const restingMax = Math.max(1e-9, ...resting);
+  const real = sumArr(bt.empLong, bt.empShort);
+
+  const linePathRange = (arr, max, i0, i1) => { let s = ''; for (let i = i0; i <= i1; i++) s += `${i === i0 ? 'M' : 'L'}${xOf(bt.offsets[i]).toFixed(1)} ${yOf(arr[i], max).toFixed(1)} `; return s.trim(); };
+  const areaPath = (arr, max, i0, i1) => {
+    let d = `M${xOf(bt.offsets[i0]).toFixed(1)} ${yBot.toFixed(1)}`;
+    for (let i = i0; i <= i1; i++) d += ` L${xOf(bt.offsets[i]).toFixed(1)} ${yOf(arr[i], max).toFixed(1)}`;
+    return d + ` L${xOf(bt.offsets[i1]).toFixed(1)} ${yBot.toFixed(1)} Z`;
+  };
+
+  const zones =
+    `<rect x="${x0}" y="${y0}" width="${(px - x0).toFixed(1)}" height="${plotH}" fill="#ff47570a"/>` +
+    `<rect x="${px.toFixed(1)}" y="${y0}" width="${(x0 + plotW - px).toFixed(1)}" height="${plotH}" fill="#2ed5730a"/>`;
+
+  // resting walls (raw model) — soft gray silhouette in the back ("where the fuel sits")
+  const restingArea = `<path d="${areaPath(resting, restingMax, 0, bt.n - 1)}" fill="#8b93a7" fill-opacity="0.12"/>`;
+  // reach-weighted expected liquidations — clean side-colored lines (red longs / green shorts)
+  const adjLines =
+    `<path d="${linePathRange(adjL, bt.adjMax, 0, bt.nDown - 1)}" fill="none" stroke="#ff6b81" stroke-width="1.6" opacity="0.95"/>` +
+    `<path d="${linePathRange(adjS, bt.adjMax, bt.nDown, bt.n - 1)}" fill="none" stroke="#51cf66" stroke-width="1.6" opacity="0.95"/>`;
+  // real OI destroyed — bright cyan line (the ground truth)
+  const realLine = `<path d="${linePathRange(real, bt.empMax, 0, bt.n - 1)}" fill="none" stroke="#22d3ee" stroke-width="2.2"/>`;
+
+  // x ticks in % from price
+  let xticks = '';
+  const NX = 8;
+  for (let i = 0; i <= NX; i++) {
+    const off = lo + (i / NX) * (hi - lo);
+    const xx = xOf(off);
+    const lbl = (off >= 0 ? '+' : '') + (off * 100).toFixed(0) + '%';
+    xticks += `<line x1="${xx.toFixed(1)}" y1="${yBot}" x2="${xx.toFixed(1)}" y2="${(yBot + 5).toFixed(1)}" stroke="#3a4152"/>` +
+      `<text x="${xx.toFixed(1)}" y="${(yBot + 17).toFixed(1)}" fill="#9ca3af" font-size="10" text-anchor="middle">${escapeHtml(lbl)}</text>`;
+  }
+  const priceLine =
+    `<line x1="${px.toFixed(1)}" y1="${y0 - 2}" x2="${px.toFixed(1)}" y2="${yBot}" stroke="#e6e9ef" stroke-width="1.3" stroke-dasharray="4 3"/>` +
+    `<text x="${px.toFixed(1)}" y="${(y0 - 5).toFixed(1)}" fill="#e6e9ef" font-size="10" font-weight="700" text-anchor="middle">price</text>` +
+    `<text x="${(x0 + 6).toFixed(1)}" y="${(y0 + 13).toFixed(1)}" fill="#ff6b6b" font-size="10" font-weight="600">◀ longs liquidate</text>` +
+    `<text x="${(x0 + plotW - 6).toFixed(1)}" y="${(y0 + 13).toFixed(1)}" fill="#51cf66" font-size="10" font-weight="600" text-anchor="end">shorts liquidate ▶</text>`;
+
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" class="btmap" data-token="${escapeHtml(token)}">` +
+    zones + restingArea + adjLines + realLine + xticks + priceLine + `</svg>`;
+}
+
+const fmtPct1 = (frac) => frac == null ? '—' : ((frac >= 0 ? '+' : '') + (frac * 100).toFixed(1) + '%');
+
+// reality-check block (panel + verdict) for one token, or a short note if data is too thin.
+function renderBacktest(bt, symbol) {
+  if (!bt) return '';
+  if (bt.insufficient) {
+    const covNote = bt.topMissing && bt.topMissing.frac >= 0.3
+      ? ` Most of ${escapeHtml(symbol || 'its')} OI sits on ${escapeHtml(bt.topMissing.exchange)} (${(bt.topMissing.frac * 100).toFixed(0)}%), which publishes no hourly OI.`
+      : '';
+    return `<div class="backtest"><div class="bt-head"><b>Reality check</b> <span class="dim">model walls vs actual OI destruction</span></div>
+      <div class="bt-note">Not enough observable open-interest history to validate this token${bt.oiVenues?.length ? ` (only ${escapeHtml(bt.oiVenues.join(', '))})` : ''}.${covNote} Needs venues that publish hourly OI (OKX/dYdX do for majors).</div></div>`;
+  }
+  const ev = bt.events.long + bt.events.short;
+  const cov = bt.coverageFrac ?? 1;
+  const covPct = (cov * 100).toFixed(0);
+  // confidence = the WEAKER of event-count and OI-coverage; both must be strong for "high"
+  const evScore = ev >= 150 ? 2 : ev >= 50 ? 1 : 0;
+  const covScore = cov >= 0.7 ? 2 : cov >= 0.4 ? 1 : 0;   // ~0.73 is the practical ceiling (HL/HTX/Kraken/Coinbase publish no hourly OI)
+  const confN = Math.min(evScore, covScore);
+  const conf = confN === 2 ? 'high' : confN === 1 ? 'moderate' : 'low';
+  const avg = (a, b) => (Math.abs(a || 0) + Math.abs(b || 0)) / 2;
+  const realAvg = avg(bt.empMeanAbs.long, bt.empMeanAbs.short) * 100;
+  const wallAvg = avg(bt.modelMeanAbs.long, bt.modelMeanAbs.short) * 100;
+  const adjPct = (bt.cosAdjOverall * 100).toFixed(0);
+  const rawPct = (bt.cosOverall * 100).toFixed(0);
+  const word = bt.cosAdjOverall >= 0.6 ? 'strong' : bt.cosAdjOverall >= 0.4 ? 'moderate' : 'weak';
+  const confColor = conf === 'high' ? '#51cf66' : conf === 'moderate' ? '#ffd43b' : '#ff922b';
+
+  const covSentence = cov >= 0.7
+    ? ` These venues cover <b>${covPct}%</b> of ${escapeHtml(symbol)}'s open interest — representative.`
+    : ` But they see only <b>${covPct}%</b> of open interest${bt.topMissing ? ` (most sits on ${escapeHtml(bt.topMissing.exchange)} — ${(bt.topMissing.frac * 100).toFixed(0)}% — which has no hourly OI feed)` : ''}, so this validates just that slice.`;
+  const verdict = ev < 50
+    ? `Only <b>${ev}</b> liquidation-scale moves in the window — too thin to validate; treat as indicative, not calibrated.${cov < 0.7 ? covSentence : ''}`
+    : `Real liquidations sit <b>~${realAvg.toFixed(1)}%</b> from price on average vs the model's <b>~${wallAvg.toFixed(1)}%</b> resting walls — destruction clusters nearer because shallow sweeps are constant and deep ones rare. Weighting the walls by how often price actually reaches each level lifts alignment to <b style="color:${bt.cosAdjOverall >= 0.6 ? '#51cf66' : '#ffd43b'}">${adjPct}%</b> (raw ${rawPct}%) — the model's wall <b>placement is ${word}</b>.${covSentence}`;
+
+  return `<div class="backtest">
+    <div class="bt-head">
+      <div><b>Reality check</b> <span class="dim">— where the model predicts walls vs where OI actually got destroyed, last ~${Math.round(bt.days)}d, by % from price · hover for values</span></div>
+      <div class="bt-legend">
+        <span class="leg"><span class="sw" style="background:#22d3ee"></span>real OI destroyed</span>
+        <span class="leg"><span class="sw" style="background:linear-gradient(90deg,#ff6b81,#51cf66)"></span>reach-weighted expected</span>
+        <span class="leg"><span class="sw" style="background:#8b93a7;opacity:.5"></span>resting walls</span>
+      </div>
+    </div>
+    ${renderBacktestSvg(bt, symbol)}
+    <div class="bt-stats">
+      <span class="stat">align <b style="color:${bt.cosAdjOverall >= 0.6 ? '#51cf66' : '#ffd43b'}">${adjPct}%</b> <span class="dim">reach-weighted · longs ${(bt.cosAdjLong * 100).toFixed(0)}% / shorts ${(bt.cosAdjShort * 100).toFixed(0)}%</span></span>
+      <span class="stat"><b style="color:${confColor}">${conf}</b> confidence <span class="dim">${ev} moves · <b style="color:${cov >= 0.7 ? '#9ca3af' : '#ff922b'}">${covPct}%</b> of OI seen · ${escapeHtml((bt.oiVenues || []).join(', '))}</span></span>
+      <span class="stat">real peak <b>${fmtPct1(bt.empPeak.long)}</b>/<b>${fmtPct1(bt.empPeak.short)}</b> <span class="dim">vs walls ${fmtPct1(bt.modelPeak.long)}/${fmtPct1(bt.modelPeak.short)}</span></span>
+    </div>
+    <div class="bt-verdict">${verdict}</div>
+    <div class="bt-caveat">Indirect proxy: OI also drops on voluntary closes; side inferred from price direction; only venues publishing hourly OI contribute. Not a real-liquidation feed (that needs an always-on WebSocket collector).</div>
+  </div>`;
 }
 
 // ===== per-token section + tooltip payload =====
@@ -96,6 +251,10 @@ function renderToken(symbol, tokenData, isFirst) {
   const cls = `board${isFirst ? ' active' : ''}`;
   const tokenCfg = (config.tokens || []).find((t) => t.symbol === symbol) || {};
   const map = buildMap(tokenData, config, tokenCfg);
+  // backtest is a secondary panel — never let it break the main map / the auto-publish
+  let bt = null;
+  try { bt = map ? buildBacktest(tokenData, map, config, tokenCfg) : null; }
+  catch (e) { console.error(`backtest failed for ${symbol}: ${e.message}`); }
   if (!map) {
     return { html: `<section class="${cls}" data-token="${escapeHtml(symbol)}"><h2>${escapeHtml(symbol)}</h2><div class="empty">No data — check fetch errors below.</div></section>`, payload: null, tab: { symbol, price: null } };
   }
@@ -103,8 +262,10 @@ function renderToken(symbol, tokenData, isFirst) {
   const venueBreak = map.venues.length
     ? map.venues.map((v) => `${v.exchange} ${fmtUsd(v.openInterestUsd)}`).join(' · ')
     : '—';
+  const cum = cumulativeVolume(map);
   const legend = map.tiers.map((t) =>
-    `<span class="leg"><span class="sw" style="background:${t.color}"></span>${escapeHtml(t.label)}</span>`).join('');
+    `<span class="leg"><span class="sw" style="background:${t.color}"></span>${escapeHtml(t.label)}</span>`).join('') +
+    `<span class="leg"><span class="sw" style="background:#f0f3f8;height:3px"></span>cumulative</span>`;
 
   // time window the map is modeled over (computed from actual kline timestamps)
   const w = map.window;
@@ -124,6 +285,7 @@ function renderToken(symbol, tokenData, isFirst) {
         ${winStat}
         <span class="stat"><b>${escapeHtml(fmtUsd(map.totalOiUsd))}</b> open interest</span>
         <span class="stat"><b>${escapeHtml(fmtUsd(map.displayedUsd))}</b> modeled in price range</span>
+        <span class="stat"><b>${escapeHtml(fmtUsd(cum.sumLong))}</b> long / <b>${escapeHtml(fmtUsd(cum.sumShort))}</b> short <span class="dim">cumulative liq to window edge</span></span>
         <span class="stat"><b>${(map.longFrac * 100).toFixed(0)}% long</b> / ${((1 - map.longFrac) * 100).toFixed(0)}% short${map.lsVenues ? '' : ' <span class="dim">(no L/S data)</span>'}</span>
         <span class="stat">${map.venues.length} venue${map.venues.length === 1 ? '' : 's'} <span class="dim">${escapeHtml(venueBreak)}</span></span>
         ${map.weighting === 'oi-delta' ? `<span class="stat"><b>OI-Δ weighted</b> <span class="dim">${map.oiVenues}/${map.venues.length} venues · rest volume</span></span>` : ''}
@@ -132,14 +294,25 @@ function renderToken(symbol, tokenData, isFirst) {
     <div class="legend">${legend}</div>
   </div>
   ${renderSvg(symbol, map)}
+  ${renderBacktest(bt, symbol)}
 </section>`;
 
   // compact payload for hover tooltips
   const payload = {
-    vbW: 1200, x0: 74, plotW: 1200 - 74 - 24, nBins: map.nBins,
+    vbW: 1200, x0: 74, plotW: 1200 - 74 - 58, nBins: map.nBins, price: map.price,
     tiers: map.tiers.map((t) => ({ lev: t.lev, label: t.label, color: t.color })),
-    bins: map.bins.map((b) => ({ price: b.price, total: b.total, totalLong: b.totalLong, totalShort: b.totalShort, long: b.long, short: b.short })),
+    bins: map.bins.map((b, i) => ({ price: b.price, total: b.total, totalLong: b.totalLong, totalShort: b.totalShort, long: b.long, short: b.short, cumLong: cum.cumLong[i], cumShort: cum.cumShort[i] })),
   };
+  // reality-check hover payload — .btmap uses its own geometry (MR=24 → plotW=1102)
+  if (bt && !bt.insufficient) {
+    payload.bt = {
+      x0: 74, plotW: 1200 - 74 - 24, n: bt.n, P: bt.P,
+      offsets: bt.offsets.map((o) => +o.toFixed(5)),
+      real: bt.empLong.map((v, i) => Math.round(v + bt.empShort[i])),
+      adj: bt.adjLong.map((v, i) => Math.round(v + bt.adjShort[i])),
+      resting: bt.modelLong.map((v, i) => Math.round(v + bt.modelShort[i])),
+    };
+  }
   return { html, payload, tab: { symbol, price: map.price } };
 }
 
@@ -198,11 +371,26 @@ section { margin: 28px 0 34px; }
 .board { display: none; }
 .board.active { display: block; }
 .liqmap { display: block; background: #11151f; border: 1px solid #1f2533; border-radius: 6px; }
+.backtest { margin-top: 14px; background: #0d1019; border: 1px solid #1f2533; border-radius: 6px; padding: 12px 14px; }
+.bt-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
+.bt-head b { font-size: 13px; }
+.bt-head .dim { color: #6b7280; font-size: 11px; }
+.bt-legend { display: flex; gap: 12px; align-items: center; }
+.btmap { display: block; background: #11151f; border: 1px solid #1f2533; border-radius: 5px; margin-bottom: 8px; }
+.bt-stats { display: flex; gap: 18px; flex-wrap: wrap; color: #9ca3af; font-size: 11px; margin-bottom: 7px; }
+.bt-stats .stat b { color: #e6e9ef; font-family: "SF Mono", monospace; }
+.bt-stats .dim { color: #6b7280; font-family: "SF Mono", monospace; }
+.bt-verdict { font-size: 12px; color: #c7ccd6; line-height: 1.5; margin-bottom: 6px; }
+.bt-verdict b { color: #e6e9ef; }
+.bt-caveat { font-size: 10.5px; color: #6b7280; line-height: 1.45; }
+.bt-note { font-size: 11.5px; color: #9ca3af; padding: 6px 0; }
 .empty { color: #6b7280; padding: 40px; text-align: center; background: #11151f; border-radius: 6px; }
 .errors { color: #ffa502; font-size: 11px; background: #1a1620; border: 1px solid #3a2a1a; border-radius: 4px; padding: 8px 12px; margin: 12px 0; }
 .liq-tooltip { position: fixed; z-index: 10; pointer-events: none; background: #161a25; border: 1px solid #2d3343; border-radius: 6px; padding: 8px 10px; font-size: 11px; box-shadow: 0 6px 24px rgba(0,0,0,0.5); min-width: 150px; }
 .liq-tooltip .th { font-family: "SF Mono", monospace; font-weight: 700; font-size: 13px; margin-bottom: 2px; }
 .liq-tooltip .sub { color: #9ca3af; margin-bottom: 6px; }
+.liq-tooltip .cum { color: #c7ccd6; margin-bottom: 6px; padding-bottom: 5px; border-bottom: 1px solid #2d3343; }
+.liq-tooltip .cum b { color: #f0f3f8; font-family: "SF Mono", monospace; }
 .liq-tooltip .tr { display: flex; align-items: center; gap: 6px; }
 .liq-tooltip .tr .v { margin-left: auto; font-family: "SF Mono", monospace; color: #e6e9ef; }
 footer { margin-top: 36px; padding-top: 16px; border-top: 1px solid #232838; color: #6b7280; font-size: 11px; line-height: 1.6; }
@@ -217,7 +405,7 @@ footer code { color: #9ca3af; }
   </div>
   <div class="meta">Refreshed ${escapeHtml(new Date(fetchedAt).toLocaleString('en-US', { dateStyle: 'short', timeStyle: 'short' }))}</div>
 </header>
-<div class="note">Where leveraged positions would be force-liquidated, by price &amp; leverage tier — modeled from trading activity over the <b>time window</b> shown in each map's stats. Bars left of the price line = long liquidations (falling price), right = short (rising). Hover any price for the breakdown.</div>
+<div class="note">Where leveraged positions would be force-liquidated, by price &amp; leverage tier — modeled from trading activity over the <b>time window</b> shown in each map's stats. Bars left of the price line = long liquidations (falling price), right = short (rising). The <b>white curve</b> is <b>cumulative liquidation volume</b> (right axis) — the running total wiped out if price sweeps from here to that level. Hover any price for the breakdown.</div>
 ${errBlock}
 ${tabBar}
 ${sections.join('\n')}
@@ -248,9 +436,39 @@ ${payloadScripts}
         const v = (b.long[t.lev] || 0) + (b.short[t.lev] || 0);
         return v > 0 ? '<div class="tr"><span class="sw" style="background:' + t.color + '"></span>' + t.label + '<span class="v">' + fmtUsd(v) + '</span></div>' : '';
       }).join('');
-      tip.innerHTML = '<div class="th">' + fmtPrice(b.price) + '</div><div class="sub">total ' + fmtUsd(b.total) + ' &middot; long ' + fmtUsd(b.totalLong) + ' &middot; short ' + fmtUsd(b.totalShort) + '</div>' + rows;
+      const isLong = b.price < d.price;
+      const cumV = isLong ? b.cumLong : b.cumShort;
+      const movePct = d.price > 0 ? Math.abs(b.price - d.price) / d.price * 100 : 0;
+      const cumStr = cumV > 0 ? '<div class="cum">↳ if price ' + (isLong ? 'falls' : 'rises') + ' to here (' + (isLong ? '−' : '+') + movePct.toFixed(1) + '%): <b>' + fmtUsd(cumV) + '</b> ' + (isLong ? 'longs' : 'shorts') + ' liquidated cumulatively</div>' : '';
+      tip.innerHTML = '<div class="th">' + fmtPrice(b.price) + '</div><div class="sub">at this price: total ' + fmtUsd(b.total) + ' &middot; long ' + fmtUsd(b.totalLong) + ' &middot; short ' + fmtUsd(b.totalShort) + '</div>' + cumStr + rows;
       tip.style.display = 'block';
       tip.style.left = Math.min(e.clientX + 14, window.innerWidth - 180) + 'px';
+      tip.style.top = (e.clientY + 14) + 'px';
+    });
+    svg.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+  });
+  // reality-check chart hover — real vs reach-weighted vs resting at each % offset
+  document.querySelectorAll('svg.btmap').forEach((svg) => {
+    const el = document.getElementById('liqdata-' + svg.dataset.token);
+    if (!el) return;
+    const d = JSON.parse(el.textContent).bt;
+    if (!d) return;
+    svg.addEventListener('mousemove', (e) => {
+      const rect = svg.getBoundingClientRect();
+      const vbX = (e.clientX - rect.left) / rect.width * 1200;
+      const idx = Math.floor((vbX - d.x0) / d.plotW * d.n);
+      if (idx < 0 || idx >= d.n) { tip.style.display = 'none'; return; }
+      const real = d.real[idx], adj = d.adj[idx], resting = d.resting[idx];
+      if (real <= 0 && adj <= 0 && resting <= 0) { tip.style.display = 'none'; return; }
+      const off = d.offsets[idx], isLong = off < 0, price = d.P * (1 + off);
+      const row = (color, label, val) => '<div class="tr"><span class="sw" style="background:' + color + '"></span>' + label + '<span class="v">' + fmtUsd(val) + '</span></div>';
+      tip.innerHTML = '<div class="th">' + (off >= 0 ? '+' : '') + (off * 100).toFixed(1) + '% &middot; ' + fmtPrice(price) + '</div>'
+        + '<div class="sub">' + (isLong ? 'long' : 'short') + ' side &middot; per ' + (d.n ? (((d.offsets[1] - d.offsets[0]) * 100).toFixed(1)) : '0.1') + '% band</div>'
+        + row('#22d3ee', 'real destroyed', real)
+        + row(isLong ? '#ff6b81' : '#51cf66', 'expected (reach-wtd)', adj)
+        + row('#8b93a7', 'resting wall', resting);
+      tip.style.display = 'block';
+      tip.style.left = Math.min(e.clientX + 14, window.innerWidth - 200) + 'px';
       tip.style.top = (e.clientY + 14) + 'px';
     });
     svg.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
