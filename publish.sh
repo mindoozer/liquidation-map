@@ -1,0 +1,27 @@
+#!/bin/bash
+# Refresh the map (all 8 venues — run from a network where Binance/Bybit are reachable,
+# e.g. this Mac) and publish liquidation-map.html to the gh-pages branch served by
+# GitHub Pages at https://mindoozer.github.io/liquidation-map/.
+#
+# Force-pushes a single-commit orphan branch each time → no git-history bloat.
+# Run manually: bash publish.sh   ·   or on a schedule via the LaunchAgent.
+
+set -e
+cd "$(dirname "$0")"
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
+ts="$(date '+%Y-%m-%d %H:%M:%S')"
+echo "[$ts] fetch + render"
+node fetch.mjs
+node render.mjs
+
+echo "[$ts] publishing to gh-pages"
+remote="$(git remote get-url origin)"
+pub="$(mktemp -d)"
+cp liquidation-map.html "$pub/index.html"
+git -C "$pub" init -q
+git -C "$pub" add -A
+git -C "$pub" -c user.email="liqmap@local" -c user.name="liqmap-bot" commit -qm "publish $ts"
+git -C "$pub" push -qf "$remote" HEAD:gh-pages
+rm -rf "$pub"
+echo "[$ts] published OK"
