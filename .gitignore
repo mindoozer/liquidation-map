@@ -1,0 +1,6 @@
+node_modules/
+data.json
+*.log
+.DS_Store
+liquidation-map.html
+dist/

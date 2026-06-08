@@ -1,0 +1,82 @@
+# Aggregate Liquidation Map — configuration
+# Phase 1: Bitcoin, Binance only. Add venues/tokens by extending these lists
+# (each new venue = one adapter file in adapters/, registered in fetch.mjs).
+
+# --- tokens to map (canonical symbol + per-venue symbol mapping) ---
+tokens:
+  - symbol: BTC
+    name: Bitcoin
+    binance: BTCUSDT
+    bybit: BTCUSDT
+    okx: BTC-USDT-SWAP
+    hyperliquid: BTC
+    dydx: BTC-USD
+    htx: BTC-USDT
+    kraken: PF_XBTUSD
+    coinbase: BTC-PERP-INTX
+  - symbol: NMR
+    name: Numeraire
+    binance: NMRUSDT
+    bybit: NMRUSDT
+    okx: NMR-USDT-SWAP
+    kraken: PF_NMRUSD
+    dydx: NMR-USD
+    max_leverage: 25                 # small-cap: tiers 10×/25× only
+    maintenance_margin_rate: 0.015   # ~1.5% (alts higher than BTC's 0.4%)
+  - symbol: ZEC
+    name: Zcash
+    binance: ZECUSDT
+    bybit: ZECUSDT
+    okx: ZEC-USDT-SWAP
+    htx: ZEC-USDT
+    kraken: PF_ZECUSD
+    coinbase: ZEC-PERP-INTX
+    hyperliquid: ZEC
+    dydx: ZEC-USD
+    max_leverage: 50                 # mid-cap: tiers 10×/25×/50× (drops 100×)
+    maintenance_margin_rate: 0.01    # ~1%
+
+# --- venues to aggregate (toggle on/off; mixed into one normalized map) ---
+venues:
+  binance:     { enabled: true }
+  bybit:       { enabled: true }
+  okx:         { enabled: true }
+  hyperliquid: { enabled: true }   # DEX
+  dydx:        { enabled: true }   # DEX (v4)
+  htx:         { enabled: true }   # CEX
+  kraken:      { enabled: true }   # CEX (Kraken Futures, linear PF)
+  coinbase:    { enabled: true }   # CEX (Coinbase Intl perp)
+
+# --- klines window: the "where positions were opened" proxy ---
+lookback:
+  interval: 1h      # candle size
+  candles: 720      # ~30 days of 1h candles (Binance max 1500 per request)
+
+# --- leverage tiers → color (cool = low lev / far from price, hot = high lev / near price).
+# weight         = assumed share of open interest at that leverage (normalized; tune freely).
+# half_life_days = recency decay: how fast older entries fade for this tier. Shrinks with
+#                  leverage because high-lev positions liquidate on tiny moves and turn over
+#                  in hours; low-lev positions persist for days/weeks.
+# These are the GLOBAL defaults. A token can override per-token (in `tokens:` above):
+#   max_leverage             → caps which tiers apply (e.g. alts can't be 100×), weights renormalize
+#   maintenance_margin_rate  → override mmr (alts have higher maintenance margin than BTC)
+#   leverage_tiers           → full custom tier list for that token ---
+leverage_tiers:
+  - { lev: 10,  weight: 0.35, half_life_days: 10,  color: '#3b82f6', label: '10×' }   # blue
+  - { lev: 25,  weight: 0.30, half_life_days: 3,   color: '#22c55e', label: '25×' }   # green
+  - { lev: 50,  weight: 0.20, half_life_days: 1,   color: '#f59e0b', label: '50×' }   # amber
+  - { lev: 100, weight: 0.15, half_life_days: 0.5, color: '#ef4444', label: '100×' }  # red
+
+# --- maintenance margin rate (approx, BTC): nudges liq price slightly toward entry ---
+maintenance_margin_rate: 0.004
+
+# --- price axis ---
+price_range_pct: 80     # MAX/compute half-range — model computes mass out to ±this%
+autofit_coverage: 0.98  # auto-fit each board's x-axis to cover this fraction of its mass per side (0 = off → use full range)
+price_range_min_pct: 8  # floor: never zoom tighter than ±this% (keeps calm tokens readable)
+bin_pct: 0.1            # price-bucket width as % of price
+smoothing_pct: 0.25     # Gaussian blur sigma as % of price to de-noise the profile (0 = off)
+
+# Shape proxy for "where positions opened": true = per-candle open-interest growth (OI-Δ,
+# truer to NEW positions) where the venue provides OI history, else traded volume. false = volume.
+oi_delta_weighting: true

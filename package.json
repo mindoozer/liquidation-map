@@ -1,0 +1,14 @@
+{
+  "name": "liquidation-map",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "fetch": "node fetch.mjs",
+    "render": "node render.mjs",
+    "refresh": "bash refresh.sh"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  }
+}
