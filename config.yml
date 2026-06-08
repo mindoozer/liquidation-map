@@ -35,6 +35,18 @@ tokens:
     dydx: ZEC-USD
     max_leverage: 50                 # mid-cap: tiers 10×/25×/50× (drops 100×)
     maintenance_margin_rate: 0.01    # ~1%
+  - symbol: HYPE
+    name: Hyperliquid
+    binance: HYPEUSDT
+    bybit: HYPEUSDT
+    okx: HYPE-USDT-SWAP
+    htx: HYPE-USDT
+    kraken: PF_HYPEUSD
+    coinbase: HYPE-PERP-INTX
+    hyperliquid: HYPE
+    dydx: HYPE-USD
+    max_leverage: 25                 # volatile large-cap; HL caps HYPE at 10×, tiers 10×/25×
+    maintenance_margin_rate: 0.01
 
 # --- venues to aggregate (toggle on/off; mixed into one normalized map) ---
 venues:
