@@ -51,12 +51,18 @@ export async function fetchBinance(token, config) {
     oiUsd: oiMap.get(k[0]) ?? null,
   }));
 
-  // long/short account ratio (sentiment skew) — optional, must not fail the fetch
-  let longFrac = null;
+  // long/short skew inputs — optional, must not fail the fetch.
+  // positions = top-trader POSITION ratio (dollar-weighted; the better liq-skew proxy)
+  // accounts  = global account ratio (retail headcount; noisy — kept for reference)
+  let longFracPositions = null, longFracAccounts = null;
+  try {
+    const pos = await fetchJson(`${FAPI}/futures/data/topLongShortPositionRatio?symbol=${symbol}&period=${interval}&limit=1`);
+    longFracPositions = num(pos[pos.length - 1]?.longAccount) || null; // field is named longAccount but is position share
+  } catch { /* optional */ }
   try {
     const ls = await fetchJson(`${FAPI}/futures/data/globalLongShortAccountRatio?symbol=${symbol}&period=${interval}&limit=1`);
-    longFrac = num(ls[ls.length - 1]?.longAccount) || null;
-  } catch { /* L/S optional */ }
+    longFracAccounts = num(ls[ls.length - 1]?.longAccount) || null;
+  } catch { /* optional */ }
 
   return {
     exchange: 'binance',
@@ -66,7 +72,9 @@ export async function fetchBinance(token, config) {
     markPrice,
     openInterestUsd,
     openInterestCoins,
-    longFrac,
+    longFracPositions,
+    longFracAccounts,
+    longFrac: longFracPositions ?? longFracAccounts,
     klines,
   };
 }

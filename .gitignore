@@ -1,6 +1,7 @@
 node_modules/
 data.json
 *.log
+snapshots/
 .DS_Store
 liquidation-map.html
 dist/

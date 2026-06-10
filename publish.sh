@@ -15,6 +15,7 @@ ts="$(date '+%Y-%m-%d %H:%M:%S')"
 echo "[$ts] fetch + render"
 node fetch.mjs
 node render.mjs
+node snapshot.mjs || echo "[$ts] snapshot failed (non-fatal)"
 
 echo "[$ts] publishing to gh-pages"
 remote="$(git remote get-url origin)"

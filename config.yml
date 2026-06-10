@@ -92,3 +92,15 @@ smoothing_pct: 0.25     # Gaussian blur sigma as % of price to de-noise the prof
 # Shape proxy for "where positions opened": true = per-candle open-interest growth (OI-Δ,
 # truer to NEW positions) where the venue provides OI history, else traded volume. false = volume.
 oi_delta_weighting: true
+
+# --- long/short skew (how wall mass splits between long & short sides) ---
+# In a perp, aggregate long notional ≡ short notional (every contract has both sides) —
+# skew only enters via asymmetric leverage mix, which public ratios proxy WEAKLY.
+# Validated 2026-06-09: realized OI destruction ≈ 50/50 (BTC, ZEC) while account ratios
+# said 65%/41% — account headcount adds noise, not signal.
+#   source: positions = top-trader position-weighted ratio (Binance/OKX; Bybit falls back
+#           to accounts) | accounts = retail headcount (legacy) | neutral = hard 50/50
+#   tilt:   damping toward neutral; used = 0.5 + (raw − 0.5)·tilt
+long_short_skew:
+  source: positions
+  tilt: 0.35

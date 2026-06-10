@@ -58,12 +58,18 @@ export async function fetchOkx(token, config) {
     .sort((a, b) => a.t - b.t) // → oldest-first
     .slice(-want);             // trim paging overshoot to the configured window
 
-  let longFrac = null;
+  // long/short skew inputs — optional. positions = top-trader position ratio (dollar-weighted).
+  let longFracPositions = null, longFracAccounts = null;
+  try {
+    const r = await j(`${BASE}/api/v5/rubik/stat/contracts/long-short-position-ratio-contract-top-trader?instId=${instId}&period=1H&limit=1`);
+    const ratio = num(r?.[0]?.[1]); // newest-first [[ts, ratio]]
+    if (ratio > 0) longFracPositions = ratio / (1 + ratio);
+  } catch { /* optional */ }
   try {
     const r = await j(`${BASE}/api/v5/rubik/stat/contracts/long-short-account-ratio?ccy=${token.symbol}&period=1H`);
     const ratio = num(r?.[0]?.[1]); // long/short account ratio
-    if (ratio > 0) longFrac = ratio / (1 + ratio);
-  } catch { /* L/S optional */ }
+    if (ratio > 0) longFracAccounts = ratio / (1 + ratio);
+  } catch { /* optional */ }
 
-  return { exchange: 'okx', symbol: instId, token: token.symbol, type: 'linear', markPrice, openInterestUsd, longFrac, klines };
+  return { exchange: 'okx', symbol: instId, token: token.symbol, type: 'linear', markPrice, openInterestUsd, longFracPositions, longFracAccounts, longFrac: longFracPositions ?? longFracAccounts, klines };
 }

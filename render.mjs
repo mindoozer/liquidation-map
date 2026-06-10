@@ -286,7 +286,9 @@ function renderToken(symbol, tokenData, isFirst) {
         <span class="stat"><b>${escapeHtml(fmtUsd(map.totalOiUsd))}</b> open interest</span>
         <span class="stat"><b>${escapeHtml(fmtUsd(map.displayedUsd))}</b> modeled in price range</span>
         <span class="stat"><b>${escapeHtml(fmtUsd(cum.sumLong))}</b> long / <b>${escapeHtml(fmtUsd(cum.sumShort))}</b> short <span class="dim">cumulative liq to window edge</span></span>
-        <span class="stat"><b>${(map.longFrac * 100).toFixed(0)}% long</b> / ${((1 - map.longFrac) * 100).toFixed(0)}% short${map.lsVenues ? '' : ' <span class="dim">(no L/S data)</span>'}</span>
+        <span class="stat"><b>${(map.longFrac * 100).toFixed(0)}% long</b> / ${((1 - map.longFrac) * 100).toFixed(0)}% short${map.lsVenues
+          ? ` <span class="dim">${map.lsSource === 'neutral' ? 'neutral' : `damped from ${(map.longFracRaw * 100).toFixed(0)}% ${map.lsPosVenues ? `pos-ratio×${map.lsPosVenues}` : ''}${map.lsPosVenues && map.lsAcctVenues ? '+' : ''}${map.lsAcctVenues ? `acct×${map.lsAcctVenues}` : ''}`}</span>`
+          : ' <span class="dim">(no L/S data)</span>'}</span>
         <span class="stat">${map.venues.length} venue${map.venues.length === 1 ? '' : 's'} <span class="dim">${escapeHtml(venueBreak)}</span></span>
         ${map.weighting === 'oi-delta' ? `<span class="stat"><b>OI-Δ weighted</b> <span class="dim">${map.oiVenues}/${map.venues.length} venues · rest volume</span></span>` : ''}
       </div>

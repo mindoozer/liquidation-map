@@ -41,11 +41,12 @@ export async function fetchBybit(token, config) {
     .map((k) => ({ t: num(k[0]), o: num(k[1]), h: num(k[2]), l: num(k[3]), c: num(k[4]), volUsd: num(k[6]), oiUsd: oiMap.get(num(k[0])) ?? null }))
     .sort((a, b) => a.t - b.t); // → oldest-first
 
-  let longFrac = null;
+  // Bybit exposes no public position-weighted ratio — account ratio only.
+  let longFracAccounts = null;
   try {
     const r = await j(`${BASE}/v5/market/account-ratio?category=linear&symbol=${symbol}&period=1h&limit=1`);
-    longFrac = num(r.list?.[0]?.buyRatio) || null;
+    longFracAccounts = num(r.list?.[0]?.buyRatio) || null;
   } catch { /* L/S optional */ }
 
-  return { exchange: 'bybit', symbol, token: token.symbol, type: 'linear', markPrice, openInterestUsd, longFrac, klines };
+  return { exchange: 'bybit', symbol, token: token.symbol, type: 'linear', markPrice, openInterestUsd, longFracPositions: null, longFracAccounts, longFrac: longFracAccounts, klines };
 }
