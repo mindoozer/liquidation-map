@@ -93,6 +93,12 @@ smoothing_pct: 0.25     # Gaussian blur sigma as % of price to de-noise the prof
 # truer to NEW positions) where the venue provides OI history, else traded volume. false = volume.
 oi_delta_weighting: true
 
+# Path-aware survivorship: drop modeled positions whose liquidation level was already
+# crossed by a LATER candle's wick (that venue's high/low) — they liquidated then, even
+# if price recovered. Kills phantom near-price walls after sweeps. false = final-state
+# check only (liq level vs current price).
+path_survivorship: true
+
 # --- long/short skew (how wall mass splits between long & short sides) ---
 # In a perp, aggregate long notional ≡ short notional (every contract has both sides) —
 # skew only enters via asymmetric leverage mix, which public ratios proxy WEAKLY.

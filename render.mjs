@@ -285,6 +285,7 @@ function renderToken(symbol, tokenData, isFirst) {
         ${winStat}
         <span class="stat"><b>${escapeHtml(fmtUsd(map.totalOiUsd))}</b> open interest</span>
         <span class="stat"><b>${escapeHtml(fmtUsd(map.displayedUsd))}</b> modeled in price range</span>
+        ${map.pathAware && map.pathKilledUsd > 0 ? `<span class="stat"><b>${escapeHtml(fmtUsd(map.pathKilledUsd))}</b> wick-swept <span class="dim">liq level already hit since entry — re-rested on survivors</span></span>` : ''}
         <span class="stat"><b>${escapeHtml(fmtUsd(cum.sumLong))}</b> long / <b>${escapeHtml(fmtUsd(cum.sumShort))}</b> short <span class="dim">cumulative liq to window edge</span></span>
         <span class="stat"><b>${(map.longFrac * 100).toFixed(0)}% long</b> / ${((1 - map.longFrac) * 100).toFixed(0)}% short${map.lsVenues
           ? ` <span class="dim">${map.lsSource === 'neutral' ? 'neutral' : `damped from ${(map.longFracRaw * 100).toFixed(0)}% ${map.lsPosVenues ? `pos-ratio×${map.lsPosVenues}` : ''}${map.lsPosVenues && map.lsAcctVenues ? '+' : ''}${map.lsAcctVenues ? `acct×${map.lsAcctVenues}` : ''}`}</span>`
@@ -413,7 +414,7 @@ ${tabBar}
 ${sections.join('\n')}
 <footer>
   <b>Method:</b> distribution shape from per-candle open-interest growth (OI-Δ) where the venue provides OI history, else traded volume, across enabled venues over the displayed time window; total magnitude anchored to current open interest.
-  Leverage tiers applied via <code>liq ≈ entry·(1 ∓ 1/L)</code> (linear USDT perps). This is a relative-intensity model, <b>not</b> real positions —
+  Leverage tiers applied via <code>liq ≈ entry·(1 ∓ 1/L)</code> (linear USDT perps); entries whose liq level was already swept by the later price path (wicks included) are dropped, their share re-rested on surviving entries. This is a relative-intensity model, <b>not</b> real positions —
   no exchange publishes per-trader leverage (same category as Coinglass / Kingfisher). Built by <code>fetch.mjs</code> + <code>render.mjs</code>.
 </footer>
 </div>

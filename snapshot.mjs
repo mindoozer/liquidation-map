@@ -66,7 +66,7 @@ for (const [symbol, tokenData] of Object.entries(tokens || {})) {
       .map((b) => [+(((b.price - map.price) / map.price) * 100).toFixed(2), Math.round(b.total)]);
 
     const line = {
-      v: 1, ts: fetchedAt, tok: symbol,
+      v: 1, mv: 3, ts: fetchedAt, tok: symbol, // mv = model generation (3 = damped pos-ratio skew + path survivorship)
       px: +map.price.toFixed(map.price < 100 ? 4 : 2),
       oi: Math.round(map.totalOiUsd),
       lsRaw: +map.longFracRaw.toFixed(4), lsUsed: +map.longFrac.toFixed(4),
