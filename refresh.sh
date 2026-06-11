@@ -15,6 +15,7 @@ echo "[$ts] refresh starting"
 if node fetch.mjs 2>&1; then
   node render.mjs 2>&1
   node snapshot.mjs 2>&1 || echo "[$ts] snapshot failed (non-fatal)"
+  node collect-liqs.mjs 2>&1 || echo "[$ts] liq poll failed (non-fatal)"
   echo "[$ts] refresh OK"
 else
   echo "[$ts] fetch failed — keeping previous liquidation-map.html"
