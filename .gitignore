@@ -6,3 +6,4 @@ liquidations/
 .DS_Store
 liquidation-map.html
 dist/
+magnet.json
