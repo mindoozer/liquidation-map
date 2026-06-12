@@ -9,6 +9,9 @@ import yaml from 'js-yaml';
 import { readFileSync, writeFileSync } from 'fs';
 import { buildMap } from './lib/model.mjs';
 import { buildBacktest } from './lib/backtest.mjs';
+import { computeSqueeze } from './lib/squeeze.mjs';
+
+const LIQ_DIR = new URL('./liquidations/', import.meta.url);
 
 const config = yaml.load(readFileSync(new URL('./config.yml', import.meta.url), 'utf8'));
 const { fetchedAt, tokens, errors = [] } = JSON.parse(readFileSync(new URL('./data.json', import.meta.url), 'utf8'));
@@ -25,6 +28,21 @@ const fmtUsd = (n) => {
 };
 const fmtPrice = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: n < 100 ? 2 : 0 });
 const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmtFunding = (x) => x == null ? '—' : ((x >= 0 ? '+' : '') + (x * 100).toFixed(3) + '%/8h');
+
+// crowding strip: verdict + every component it was computed from (no black box)
+function squeezeStrip(sq) {
+  const head = sq.dir === 'long' ? `▼ Long-squeeze ${sq.level}` : sq.dir === 'short' ? `▲ Short-squeeze ${sq.level}` : '— crowding balanced';
+  const cls = sq.dir === 'long' ? 'sq-long' : sq.dir === 'short' ? 'sq-short' : 'sq-neutral';
+  const rTot = sq.realizedLong + sq.realizedShort;
+  const parts = [
+    `funding <b>${escapeHtml(fmtFunding(sq.funding8h))}</b>`,
+    `fuel ±5%: <b>↓${escapeHtml(fmtUsd(sq.fuelL))}</b> / <b>↑${escapeHtml(fmtUsd(sq.fuelS))}</b>`,
+    sq.longShare != null ? `24h real liqs <b>${Math.round(sq.longShare * 100)}% long</b> <span class="dim">of ${escapeHtml(fmtUsd(rTot))}</span>` : '24h real liqs <span class="dim">none</span>',
+    sq.absorb != null && isFinite(sq.absorb) ? `top wall ≈ <b>${sq.absorb.toFixed(1)}×</b> hourly vol` : '',
+  ].filter(Boolean).join(' &nbsp;·&nbsp; ');
+  return `<div class="squeeze ${cls}"><span class="sqh">${head}</span><span class="sqd">${parts}</span></div>`;
+}
 
 // cumulative liquidation notional from the price line outward, per displayed bin.
 // cumLong rises as price falls (longs), cumShort rises as price rises (shorts).
@@ -279,6 +297,9 @@ function renderToken(symbol, tokenData, isFirst) {
     ? map.venues.map((v) => `${v.exchange} ${fmtUsd(v.openInterestUsd)}`).join(' · ')
     : '—';
   const cum = cumulativeVolume(map);
+  // crowding/squeeze read — never let it break the board
+  let sq = null;
+  try { sq = computeSqueeze(map, tokenData, LIQ_DIR, symbol); } catch (e) { console.error(`squeeze failed for ${symbol}: ${e.message}`); }
   const legend = map.tiers.map((t) =>
     `<span class="leg"><span class="sw" style="background:${t.color}"></span>${escapeHtml(t.label)}</span>`).join('') +
     `<span class="leg"><span class="sw" style="background:#f0f3f8;height:3px"></span>cumulative</span>`;
@@ -303,6 +324,7 @@ function renderToken(symbol, tokenData, isFirst) {
         <span class="stat"><b>${escapeHtml(fmtUsd(map.displayedUsd))}</b> modeled in price range</span>
         ${map.pathAware && map.pathKilledUsd > 0 ? `<span class="stat"><b>${escapeHtml(fmtUsd(map.pathKilledUsd))}</b> wick-swept <span class="dim">liq level already hit since entry — re-rested on survivors</span></span>` : ''}
         <span class="stat"><b>${escapeHtml(fmtUsd(cum.sumLong))}</b> long / <b>${escapeHtml(fmtUsd(cum.sumShort))}</b> short <span class="dim">cumulative liq to window edge</span></span>
+        ${map.funding8h != null ? `<span class="stat"><b>${escapeHtml(fmtFunding(map.funding8h))}</b> funding <span class="dim">${map.fundingVenues} venue${map.fundingVenues === 1 ? '' : 's'}, OI-wtd</span></span>` : ''}
         <span class="stat"><b>${(map.longFrac * 100).toFixed(0)}% long</b> / ${((1 - map.longFrac) * 100).toFixed(0)}% short${map.lsVenues
           ? ` <span class="dim">${map.lsSource === 'neutral' ? 'neutral' : `damped from ${(map.longFracRaw * 100).toFixed(0)}% ${map.lsPosVenues ? `pos-ratio×${map.lsPosVenues}` : ''}${map.lsPosVenues && map.lsAcctVenues ? '+' : ''}${map.lsAcctVenues ? `acct×${map.lsAcctVenues}` : ''}`}</span>`
           : ' <span class="dim">(no L/S data)</span>'}</span>
@@ -312,6 +334,7 @@ function renderToken(symbol, tokenData, isFirst) {
     </div>
     <div class="legend">${legend}</div>
   </div>
+  ${sq ? squeezeStrip(sq) : ''}
   ${renderSvg(symbol, map)}
   ${renderBacktest(bt, symbol)}
 </section>`;
@@ -353,6 +376,21 @@ const errBlock = errors.length
   ? `<div class="errors"><b>fetch errors:</b> ${errors.map((e) => escapeHtml(`${e.token}/${e.venue}: ${e.error}`)).join(' · ')}</div>`
   : '';
 
+// magnet study (magnet-study.mjs writes magnet.json on each tick; absent on first runs)
+let magnetBlock = '';
+try {
+  const mg = JSON.parse(readFileSync(new URL('./magnet.json', import.meta.url), 'utf8'));
+  const rows = (mg.pooled || []).map((b) =>
+    `<tr><td>${escapeHtml(b.bucket)}</td><td>${b.n}</td><td>${b.n ? (b.touch * 100).toFixed(0) + '%' : '—'}</td><td>${b.n ? (b.base * 100).toFixed(0) + '%' : '—'}</td><td class="${b.n >= 20 ? (b.lift > 0 ? 'lift-pos' : 'lift-neg') : ''}">${b.n ? ((b.lift >= 0 ? '+' : '') + (b.lift * 100).toFixed(0) + 'pts') : '—'}</td></tr>`).join('');
+  const perTok = Object.entries(mg.tokens || {}).map(([t, v]) => `${t} ${v.samples}`).join(' · ');
+  magnetBlock = `<div class="magnet">
+  <h3>Magnet study <span style="color:#6b7280;font-weight:400">— do predicted walls attract price? (forward test on wall snapshots, ${mg.horizonH}h horizon)</span></h3>
+  <div class="sub">touch = price reached the wall level within ${mg.horizonH}h of the snapshot · base = probability of reaching that distance anyway (matched excursion CDF) · lift = touch − base</div>
+  <table><tr><th>wall distance</th><th>walls</th><th>touched</th><th>base</th><th>lift</th></tr>${rows}</table>
+  <div class="note">⚠ read direction, not magnitude: 30-min snapshots with a ${mg.horizonH}h horizon overlap heavily, so the effective sample is far smaller than n. snapshots per token: ${escapeHtml(perTok)} · since ${escapeHtml((mg.firstSnapshot || '').slice(0, 10))} · the matched base rate controls for distance, not for regime — confidence accrues with calendar time.</div>
+</div>`;
+} catch { /* no magnet.json yet */ }
+
 const payloadScripts = Object.entries(payloads)
   .map(([sym, p]) => `<script type="application/json" id="liqdata-${escapeHtml(sym)}">${JSON.stringify(p)}</script>`)
   .join('\n');
@@ -380,6 +418,22 @@ section { margin: 28px 0 34px; }
 .stats .stat b { color: #e6e9ef; font-family: "SF Mono", monospace; font-weight: 600; }
 .stats .dim { color: #6b7280; font-family: "SF Mono", monospace; }
 .legend { display: flex; gap: 12px; align-items: center; }
+.squeeze { display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; margin: 0 0 8px; padding: 7px 12px; border-radius: 5px; font-size: 12px; border: 1px solid #232838; background: #141823; }
+.squeeze .sqh { font-weight: 700; white-space: nowrap; }
+.squeeze .sqd { color: #9ca3af; }
+.squeeze .sqd b { color: #e6e9ef; font-family: "SF Mono", monospace; font-weight: 600; }
+.squeeze.sq-long { border-color: #3a2027; background: #ff47570d; } .squeeze.sq-long .sqh { color: #ff8787; }
+.squeeze.sq-short { border-color: #1f3a28; background: #2ed5730d; } .squeeze.sq-short .sqh { color: #69db7c; }
+.squeeze.sq-neutral .sqh { color: #9ca3af; }
+.magnet { margin: 30px 0 0; background: #0d1019; border: 1px solid #1f2533; border-radius: 6px; padding: 14px 16px; }
+.magnet h3 { font-size: 13px; margin-bottom: 4px; }
+.magnet .sub { color: #6b7280; font-size: 11px; margin-bottom: 10px; }
+.magnet table { border-collapse: collapse; font-size: 12px; }
+.magnet th, .magnet td { padding: 4px 14px 4px 0; text-align: right; color: #c7ccd6; }
+.magnet th { color: #6b7280; font-weight: 600; font-size: 11px; }
+.magnet td:first-child, .magnet th:first-child { text-align: left; }
+.magnet .lift-pos { color: #69db7c; font-weight: 700; } .magnet .lift-neg { color: #ff8787; font-weight: 700; }
+.magnet .note { color: #6b7280; font-size: 10.5px; margin-top: 8px; line-height: 1.5; }
 .leg { font-size: 11px; color: #9ca3af; display: inline-flex; align-items: center; gap: 5px; }
 .sw { width: 11px; height: 11px; border-radius: 2px; display: inline-block; }
 .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 18px 0 4px; }
@@ -428,6 +482,7 @@ footer code { color: #9ca3af; }
 ${errBlock}
 ${tabBar}
 ${sections.join('\n')}
+${magnetBlock}
 <footer>
   <b>Method:</b> distribution shape from per-candle open-interest growth (OI-Δ) where the venue provides OI history, else traded volume, across enabled venues over the displayed time window; total magnitude anchored to current open interest.
   Leverage tiers applied via <code>liq ≈ entry·(1 ∓ 1/L)</code> (linear USDT perps); entries whose liq level was already swept by the later price path (wicks included) are dropped, their share re-rested on surviving entries. This is a relative-intensity model, <b>not</b> real positions —

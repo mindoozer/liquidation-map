@@ -58,6 +58,13 @@ export async function fetchOkx(token, config) {
     .sort((a, b) => a.t - b.t) // → oldest-first
     .slice(-want);             // trim paging overshoot to the configured window
 
+  // funding rate (native ~8h period) — optional
+  let funding8h = null;
+  try {
+    const fr = await j(`${BASE}/api/v5/public/funding-rate?instId=${instId}`);
+    if (fr?.[0]?.fundingRate != null) funding8h = +fr[0].fundingRate;
+  } catch { /* optional */ }
+
   // long/short skew inputs — optional. positions = top-trader position ratio (dollar-weighted).
   let longFracPositions = null, longFracAccounts = null;
   try {
@@ -71,5 +78,5 @@ export async function fetchOkx(token, config) {
     if (ratio > 0) longFracAccounts = ratio / (1 + ratio);
   } catch { /* optional */ }
 
-  return { exchange: 'okx', symbol: instId, token: token.symbol, type: 'linear', markPrice, openInterestUsd, longFracPositions, longFracAccounts, longFrac: longFracPositions ?? longFracAccounts, klines };
+  return { exchange: 'okx', symbol: instId, token: token.symbol, type: 'linear', markPrice, openInterestUsd, longFracPositions, longFracAccounts, longFrac: longFracPositions ?? longFracAccounts, funding8h, klines };
 }

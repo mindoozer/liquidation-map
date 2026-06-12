@@ -16,7 +16,8 @@
 // Foreground test: COLLECTOR_TEST_SECS=90 node collector.mjs
 
 import yaml from 'js-yaml';
-import { readFileSync, writeFileSync, appendFileSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync } from 'fs';
+import { execFile } from 'child_process';
 
 const ROOT = new URL('./', import.meta.url);
 const DIR = new URL('./liquidations/', ROOT);
@@ -39,6 +40,64 @@ function record(venue, tok, ev) {
   appendFileSync(new URL(`${tok}.jsonl`, DIR), JSON.stringify({ v: 1, src: 'ws', venue, tok, ...ev }) + '\n');
   status.events[venue]++; status.lastEventAt[venue] = new Date().toISOString(); writeStatus();
   console.log(`${new Date().toISOString()} ${venue} ${tok} ${ev.side} liq ${ev.usd != null ? '$' + Math.round(ev.usd).toLocaleString() : '(no ctVal yet)'} @ ${ev.px}`);
+  if (ev.usd > 0) trackBurst(tok, ev.usd);
+}
+
+// ===== V6 real-time alerts — macOS notification + alerts.jsonl, cooldown-throttled =====
+const cooldowns = {};
+const canAlert = (key, mins) => { const n = Date.now(); if (cooldowns[key] && n - cooldowns[key] < mins * 60e3) return false; cooldowns[key] = n; return true; };
+function alert(type, tok, title, body) {
+  console.log(`ALERT ${type} ${tok}: ${title} — ${body}`);
+  try { appendFileSync(new URL('alerts.jsonl', DIR), JSON.stringify({ ts: Date.now(), type, tok, title, body }) + '\n'); } catch {}
+  try { execFile('osascript', ['-e', `display notification ${JSON.stringify(body)} with title ${JSON.stringify(title)} sound name "Submarine"`]); } catch {}
+}
+
+// context for thresholds: token OI (data.json) + latest modeled top-5 walls (snapshots),
+// both written by the publish tick — refresh every 10 min.
+const tokOi = {}, tokWalls = {};
+function refreshContext() {
+  try {
+    const d = JSON.parse(readFileSync(new URL('./data.json', ROOT), 'utf8'));
+    for (const [sym, td] of Object.entries(d.tokens || {})) tokOi[sym] = (td.venues || []).reduce((s, v) => s + (v.openInterestUsd || 0), 0);
+  } catch {}
+  for (const sym of Object.keys(tokOi)) {
+    try {
+      const f = new URL(`./snapshots/${sym}.jsonl`, ROOT);
+      if (!existsSync(f)) continue;
+      const txt = readFileSync(f, 'utf8').trimEnd();
+      const s = JSON.parse(txt.slice(txt.lastIndexOf('\n') + 1));
+      tokWalls[sym] = (s.top || []).slice(0, 5).map(([off, usd]) => ({ px: s.px * (1 + off / 100), usd }));
+    } catch {}
+  }
+}
+
+// burst: rolling 5-min realized-liq sum per token (WS venues) vs OI-scaled threshold
+const burst = {};
+function trackBurst(tok, usd) {
+  const now = Date.now();
+  const buf = (burst[tok] ||= []);
+  buf.push({ t: now, usd });
+  while (buf.length && now - buf[0].t > 5 * 60e3) buf.shift();
+  const sum = buf.reduce((s, x) => s + x.usd, 0);
+  const thr = Math.max((tokOi[tok] || 0) * 0.0005, 250000); // 0.05% of OI, floor $250K
+  if (sum >= thr && canAlert(`burst:${tok}`, 30)) {
+    alert('burst', tok, `${tok} liquidation burst`, `$${(sum / 1e6).toFixed(1)}M liquidated in 5 min across ${buf.length} events — cascade in progress`);
+  }
+}
+
+// sweep: live mark price (binance streams) crossing a top-5 modeled wall level.
+// SPACEX has no binance listing → no live px → no sweep alerts for it (HL-only token).
+const livePx = {};
+function trackSweep(tok, price) {
+  const prev = livePx[tok]; livePx[tok] = price;
+  if (!prev || !tokWalls[tok]) return;
+  for (const w of tokWalls[tok]) {
+    if ((prev < w.px && price >= w.px) || (prev > w.px && price <= w.px)) {
+      if (canAlert(`sweep:${tok}:${w.px.toFixed(2)}`, 120)) {
+        alert('sweep', tok, `${tok} hit modeled wall`, `price crossed ${w.px.toFixed(2)} — ~$${(w.usd / 1e6).toFixed(0)}M modeled liquidations at this level`);
+      }
+    }
+  }
 }
 
 // OKX sizes are in CONTRACTS — need ctVal (base units per contract) to get USD.
@@ -126,12 +185,15 @@ connect({
 // largest liquidation per symbol per second — sampled, not exhaustive. ----
 connect({
   name: 'binance',
-  url: 'wss://fstream.binance.com/market/stream?streams=!forceOrder@arr/btcusdt@markPrice',
+  // markPrice streams (3s) per binance-listed token: liveness heartbeat for the watchdog
+  // AND the live-price feed for wall-sweep alerts
+  url: `wss://fstream.binance.com/market/stream?streams=${['!forceOrder@arr', ...[...binanceSyms.keys()].map((s) => `${s.toLowerCase()}@markPrice`)].join('/')}`,
   ping: () => {},  // server pings every ~3 min (runtime auto-pongs); markPrice keeps inbound traffic flowing
-  onOpen: () => console.log('binance: subscribed (!forceOrder@arr via /market, markPrice heartbeat)'),
+  onOpen: () => console.log(`binance: subscribed (!forceOrder@arr + ${binanceSyms.size}× markPrice via /market)`),
   onMsg: (data) => {
     const d = JSON.parse(data);
-    if (d.stream !== '!forceOrder@arr') return; // heartbeat or ack — liveness only
+    if (d.stream?.endsWith('@markPrice')) { const tok = binanceSyms.get(d.data?.s); if (tok && +d.data.p > 0) trackSweep(tok, +d.data.p); return; }
+    if (d.stream !== '!forceOrder@arr') return; // ack or unknown — liveness only
     const o = d.data?.o;
     if (!o) return;
     const tok = binanceSyms.get(o.s);
@@ -143,6 +205,7 @@ connect({
 });
 
 loadOkxInstruments();
+refreshContext(); setInterval(refreshContext, 10 * 60e3);
 setInterval(() => WATCHDOGS.forEach((f) => f()), 30000);
 setInterval(() => { console.log(`heartbeat: okx=${status.events.okx} bybit=${status.events.bybit} binance=${status.events.binance} events since ${status.startedAt}`); writeStatus(); }, 30 * 60000);
 writeStatus();

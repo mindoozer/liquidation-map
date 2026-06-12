@@ -3,6 +3,10 @@
 //   candleSnapshot   → [{t,T,o,h,l,c, v(base-coin volume), n}] — oldest-first
 // Note: Hyperliquid BTC caps at 40× leverage; we still apply the global tier
 // distribution (a modeled assumption), same as the CEX venues.
+// HIP-3 builder-deployed markets (pre-IPO equities etc.) live on separate dexs and
+// are addressed as "<dex>:<COIN>" (e.g. xyz:SPCX) — meta queries need the dex param,
+// candleSnapshot takes the full prefixed name. Give such tokens their own low-leverage
+// tier ladder in config (asset maxLeverage is small; HL mmr = 1/(2·maxLev)).
 
 import { num, coinOiToUsd } from '../lib/normalize.mjs';
 
@@ -23,8 +27,9 @@ export async function fetchHyperliquid(token, config) {
   const ms = MS[interval] ?? 3600e3;
   const now = Date.now();
 
+  const dex = coin.includes(':') ? coin.split(':')[0] : undefined; // HIP-3 dex prefix
   const [metaCtx, candles] = await Promise.all([
-    post({ type: 'metaAndAssetCtxs' }),
+    post(dex ? { type: 'metaAndAssetCtxs', dex } : { type: 'metaAndAssetCtxs' }),
     post({ type: 'candleSnapshot', req: { coin, interval, startTime: now - want * ms, endTime: now } }),
   ]);
 
@@ -43,5 +48,5 @@ export async function fetchHyperliquid(token, config) {
     .sort((a, b) => a.t - b.t)
     .slice(-want);
 
-  return { exchange: 'hyperliquid', symbol: coin, token: token.symbol, type: 'linear', markPrice, openInterestUsd, klines };
+  return { exchange: 'hyperliquid', symbol: coin, token: token.symbol, type: 'linear', markPrice, openInterestUsd, funding8h: ctx.funding != null ? +ctx.funding * 8 : null /* HL funding is hourly */, klines };
 }

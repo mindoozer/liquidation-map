@@ -48,5 +48,5 @@ export async function fetchBybit(token, config) {
     longFracAccounts = num(r.list?.[0]?.buyRatio) || null;
   } catch { /* L/S optional */ }
 
-  return { exchange: 'bybit', symbol, token: token.symbol, type: 'linear', markPrice, openInterestUsd, longFracPositions: null, longFracAccounts, longFrac: longFracAccounts, klines };
+  return { exchange: 'bybit', symbol, token: token.symbol, type: 'linear', markPrice, openInterestUsd, longFracPositions: null, longFracAccounts, longFrac: longFracAccounts, funding8h: t.fundingRate != null && t.fundingRate !== '' ? +t.fundingRate : null, klines };
 }

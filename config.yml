@@ -47,6 +47,15 @@ tokens:
     dydx: HYPE-USD
     max_leverage: 25                 # volatile large-cap; HL caps HYPE at 10×, tiers 10×/25×
     maintenance_margin_rate: 0.01
+  - symbol: SPACEX
+    name: SpaceX
+    hyperliquid: "xyz:SPCX"          # HIP-3 pre-IPO perp on HL's xyz dex (~$294M OI at add time; vntl:SPACEX is ~$3M dust)
+    max_leverage: 5                  # asset cap on HL
+    maintenance_margin_rate: 0.10    # HL maintenance = 1/(2·maxLev) = 10%
+    leverage_tiers:                  # global 10–100× ladder impossible here — own low-lev ladder
+      - { lev: 2, weight: 0.45, half_life_days: 14, color: '#3b82f6', label: '2×' }   # liq ≈ −40%/+40%
+      - { lev: 3, weight: 0.35, half_life_days: 7,  color: '#22c55e', label: '3×' }   # liq ≈ −23%/+23%
+      - { lev: 5, weight: 0.20, half_life_days: 2,  color: '#ef4444', label: '5×' }   # liq ≈ −10%/+10%
 
 # --- venues to aggregate (toggle on/off; mixed into one normalized map) ---
 venues:

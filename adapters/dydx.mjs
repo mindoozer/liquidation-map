@@ -49,5 +49,5 @@ export async function fetchDydx(token, config) {
     .sort((a, b) => a.t - b.t)
     .slice(-want);
 
-  return { exchange: 'dydx', symbol: ticker, token: token.symbol, type: 'linear', markPrice, openInterestUsd, klines };
+  return { exchange: 'dydx', symbol: ticker, token: token.symbol, type: 'linear', markPrice, openInterestUsd, funding8h: m.nextFundingRate != null ? +m.nextFundingRate * 8 : null /* dYdX funding is hourly */, klines };
 }

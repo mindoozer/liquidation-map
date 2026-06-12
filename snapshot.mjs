@@ -18,7 +18,11 @@
 
 import yaml from 'js-yaml';
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from 'fs';
+import { execFile } from 'child_process';
 import { buildMap } from './lib/model.mjs';
+import { computeSqueeze } from './lib/squeeze.mjs';
+
+const LIQ_DIR = new URL('./liquidations/', import.meta.url);
 
 const dir = new URL('./snapshots/', import.meta.url);
 mkdirSync(dir, { recursive: true });
@@ -38,12 +42,11 @@ function cumAt(map, offPct) { // cumulative liq notional from price out to offPc
   return Math.round(acc);
 }
 
-function lastLoggedTs(file) {
+function lastLogged(file) {
   if (!existsSync(file)) return null;
   const txt = readFileSync(file, 'utf8').trimEnd();
   const nl = txt.lastIndexOf('\n');
-  const last = nl >= 0 ? txt.slice(nl + 1) : txt;
-  try { return JSON.parse(last).ts ?? null; } catch { return null; }
+  try { return JSON.parse(nl >= 0 ? txt.slice(nl + 1) : txt); } catch { return null; }
 }
 
 let logged = 0, skipped = 0;
@@ -53,7 +56,8 @@ for (const [symbol, tokenData] of Object.entries(tokens || {})) {
     const map = buildMap(tokenData, config, tokenCfg);
     if (!map) { skipped++; continue; }
     const file = new URL(`${symbol}.jsonl`, dir);
-    if (lastLoggedTs(file) === fetchedAt) { skipped++; continue; } // already logged this fetch
+    const prev = lastLogged(file);
+    if (prev?.ts === fetchedAt) { skipped++; continue; } // already logged this fetch
 
     const ven = {};
     for (const v of tokenData.venues || []) if (v.openInterestUsd > 0) ven[v.exchange] = Math.round(v.openInterestUsd);
@@ -65,17 +69,32 @@ for (const [symbol, tokenData] of Object.entries(tokens || {})) {
       .slice(0, 10)
       .map((b) => [+(((b.price - map.price) / map.price) * 100).toFixed(2), Math.round(b.total)]);
 
+    // squeeze read (funding + fuel asymmetry + realized pressure) — optional, never fatal
+    let sq = null;
+    try { sq = computeSqueeze(map, tokenData, LIQ_DIR, symbol); } catch {}
+
     const line = {
       v: 1, mv: 3, ts: fetchedAt, tok: symbol, // mv = model generation (3 = damped pos-ratio skew + path survivorship)
       px: +map.price.toFixed(map.price < 100 ? 4 : 2),
       oi: Math.round(map.totalOiUsd),
       lsRaw: +map.longFracRaw.toFixed(4), lsUsed: +map.longFrac.toFixed(4),
+      f8: map.funding8h != null ? +map.funding8h.toFixed(6) : null,
+      fuel5: sq ? [Math.round(sq.fuelL), Math.round(sq.fuelS)] : null,
+      sqz: sq ? sq.score : null,
       ven,
       win: [+(((map.range.lo - map.price) / map.price) * 100).toFixed(1), +(((map.range.hi - map.price) / map.price) * 100).toFixed(1)],
       cum, top,
     };
     appendFileSync(file, JSON.stringify(line) + '\n');
     logged++;
+
+    // squeeze-setup flip alert: notify when a token ENTERS elevated/high squeeze territory
+    if (sq && Math.abs(sq.score) >= 2 && Math.abs(prev?.sqz ?? 0) < 2) {
+      const dir = sq.score > 0 ? 'LONG-squeeze (downside)' : 'SHORT-squeeze (upside)';
+      const body = `${symbol}: ${dir} ${sq.level} — funding ${sq.funding8h != null ? (sq.funding8h * 100).toFixed(3) + '%/8h' : '—'}, fuel ↓$${Math.round(sq.fuelL / 1e6)}M/↑$${Math.round(sq.fuelS / 1e6)}M`;
+      console.error(`squeeze flip: ${body}`);
+      try { execFile('osascript', ['-e', `display notification ${JSON.stringify(body)} with title ${JSON.stringify(symbol + ' squeeze setup')} sound name "Submarine"`]); } catch {}
+    }
   } catch (e) {
     console.error(`snapshot ${symbol} failed: ${e.message}`);
   }

@@ -13,8 +13,9 @@ ts="$(date '+%Y-%m-%d %H:%M:%S')"
 echo "[$ts] refresh starting"
 
 if node fetch.mjs 2>&1; then
-  node render.mjs 2>&1
   node snapshot.mjs 2>&1 || echo "[$ts] snapshot failed (non-fatal)"
+  node magnet-study.mjs 2>&1 || echo "[$ts] magnet study failed (non-fatal)"
+  node render.mjs 2>&1
   node collect-liqs.mjs 2>&1 || echo "[$ts] liq poll failed (non-fatal)"
   echo "[$ts] refresh OK"
 else

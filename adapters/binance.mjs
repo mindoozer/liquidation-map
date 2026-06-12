@@ -75,6 +75,7 @@ export async function fetchBinance(token, config) {
     longFracPositions,
     longFracAccounts,
     longFrac: longFracPositions ?? longFracAccounts,
+    funding8h: prem.lastFundingRate != null ? +prem.lastFundingRate : null, // native 8h
     klines,
   };
 }
