@@ -24,13 +24,14 @@ mkdirSync(DIR, { recursive: true });
 const config = yaml.load(readFileSync(new URL('./config.yml', ROOT), 'utf8'));
 
 // venue symbol → canonical token, from config (new tokens auto-subscribe)
-const okxIds = new Map(), bybitSyms = new Map();
+const okxIds = new Map(), bybitSyms = new Map(), binanceSyms = new Map();
 for (const t of config.tokens || []) {
   if (t.okx) okxIds.set(t.okx, t.symbol);
   if (t.bybit) bybitSyms.set(t.bybit, t.symbol);
+  if (t.binance) binanceSyms.set(t.binance, t.symbol);
 }
 
-const status = { startedAt: new Date().toISOString(), events: { okx: 0, bybit: 0 }, lastEventAt: {}, lastMsgAt: {} };
+const status = { startedAt: new Date().toISOString(), events: { okx: 0, bybit: 0, binance: 0 }, lastEventAt: {}, lastMsgAt: {} };
 const writeStatus = () => { try { writeFileSync(new URL('.collector-status.json', DIR), JSON.stringify(status, null, 1)); } catch {} };
 const touch = (name) => { status.lastMsgAt[name] = Date.now(); };
 
@@ -116,11 +117,36 @@ connect({
   },
 });
 
+// ---- Binance: all-market force orders. MUST use the routed /market path — Binance's
+// 2026 WS migration moved market data to routed endpoints (/public|/market|/private);
+// legacy /ws and /stream URLs still connect and ack subscriptions but never push data
+// (that zombie behavior was initially misdiagnosed as geo-blocking). A btcusdt@markPrice
+// stream rides along purely as a liveness heartbeat for the silence watchdog (forceOrder
+// alone is quiet in calm minutes). Sampling caveat: Binance pushes at most the single
+// largest liquidation per symbol per second — sampled, not exhaustive. ----
+connect({
+  name: 'binance',
+  url: 'wss://fstream.binance.com/market/stream?streams=!forceOrder@arr/btcusdt@markPrice',
+  ping: () => {},  // server pings every ~3 min (runtime auto-pongs); markPrice keeps inbound traffic flowing
+  onOpen: () => console.log('binance: subscribed (!forceOrder@arr via /market, markPrice heartbeat)'),
+  onMsg: (data) => {
+    const d = JSON.parse(data);
+    if (d.stream !== '!forceOrder@arr') return; // heartbeat or ack — liveness only
+    const o = d.data?.o;
+    if (!o) return;
+    const tok = binanceSyms.get(o.s);
+    if (!tok) return;
+    const px = +o.ap || +o.p, q = +o.q;
+    // o.S = side of the forced order: SELL closes a long → long was liquidated
+    record('binance', tok, { ts: +o.T || +d.data.E, side: o.S === 'SELL' ? 'long' : 'short', px, usd: px * q, id: `binance-${o.T}-${px}-${q}` });
+  },
+});
+
 loadOkxInstruments();
 setInterval(() => WATCHDOGS.forEach((f) => f()), 30000);
-setInterval(() => { console.log(`heartbeat: okx=${status.events.okx} bybit=${status.events.bybit} events since ${status.startedAt}`); writeStatus(); }, 30 * 60000);
+setInterval(() => { console.log(`heartbeat: okx=${status.events.okx} bybit=${status.events.bybit} binance=${status.events.binance} events since ${status.startedAt}`); writeStatus(); }, 30 * 60000);
 writeStatus();
-console.log(`collector up — okx[${[...okxIds.keys()].join(',')}] bybit[${[...bybitSyms.keys()].join(',')}]`);
+console.log(`collector up — okx[${[...okxIds.keys()].join(',')}] bybit[${[...bybitSyms.keys()].join(',')}] binance[${[...binanceSyms.keys()].join(',')}]`);
 
 for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { console.log(`${sig} — flushing status, exiting`); writeStatus(); process.exit(0); });
 if (process.env.COLLECTOR_TEST_SECS) setTimeout(() => { console.log(`test window (${process.env.COLLECTOR_TEST_SECS}s) done`); writeStatus(); process.exit(0); }, +process.env.COLLECTOR_TEST_SECS * 1000);
