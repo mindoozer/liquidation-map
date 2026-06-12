@@ -27,12 +27,17 @@ async function j(url) {
   return res.json();
 }
 
-// append events (already filtered > watermark), advance watermark to max ts seen
+// append events (already filtered > watermark), then advance the watermark to
+// max(last event, NOW − 20min): an empty poll still proves we observed the query
+// window, so quiet periods must not age the watermark (that caused false gap
+// warnings and ever-deeper dYdX/Kraken paging). The 20-min overlap absorbs venue
+// reporting lag; at the 30-min cadence staleness stays ≤50min < the 1h HTX window.
 function commit(venue, tok, events) {
   events.sort((a, b) => a.ts - b.ts);
   for (const ev of events) appendFileSync(new URL(`${tok}.jsonl`, DIR), JSON.stringify({ v: 1, src: 'poll', venue, tok, ...ev }) + '\n');
-  if (events.length) (state[venue] ||= {})[tok] = events[events.length - 1].ts;
-  else (state[venue] ||= {})[tok] = state?.[venue]?.[tok] ?? (NOW - 24 * 3600e3); // hold watermark
+  const prev = state?.[venue]?.[tok] ?? (NOW - 24 * 3600e3);
+  const maxTs = events.length ? events[events.length - 1].ts : 0;
+  (state[venue] ||= {})[tok] = Math.max(prev, maxTs, NOW - 20 * 60e3);
   return events.length;
 }
 

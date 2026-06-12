@@ -59,14 +59,23 @@ function renderSvg(token, map) {
     `<text x="${(x0 + 8).toFixed(1)}" y="${(y0 + 15).toFixed(1)}" fill="#ff6b6b" font-size="11" font-weight="600">◀ longs liquidate</text>` +
     `<text x="${(x0 + plotW - 8).toFixed(1)}" y="${(y0 + 15).toFixed(1)}" fill="#51cf66" font-size="11" font-weight="600" text-anchor="end">shorts liquidate ▶</text>`;
 
-  // y gridlines
-  let yticks = '';
-  const NY = 4;
-  for (let i = 1; i <= NY; i++) {
+  // sector-grid underlay — squares make long vs short magnitudes comparable by eye
+  // (count cells either side of the price line). Major lines at ticks, faint minors at
+  // half-steps; 8×4 ticks ≈ square cells at this aspect ratio.
+  let grid = '';
+  const NY = 4, NX = 8;
+  for (let i = 1; i < NY * 2; i++) {           // horizontals (skip plot top/bottom edges)
+    const yy = yBot - (i / (NY * 2)) * plotH;
+    grid += `<line x1="${x0}" y1="${yy.toFixed(1)}" x2="${(x0 + plotW).toFixed(1)}" y2="${yy.toFixed(1)}" stroke="${i % 2 ? '#1a202e' : '#262e40'}"/>`;
+  }
+  for (let i = 1; i < NX * 2; i++) {           // verticals
+    const xx = x0 + (i / (NX * 2)) * plotW;
+    grid += `<line x1="${xx.toFixed(1)}" y1="${y0}" x2="${xx.toFixed(1)}" y2="${yBot}" stroke="${i % 2 ? '#1a202e' : '#262e40'}"/>`;
+  }
+  for (let i = 1; i <= NY; i++) {              // left-axis $ labels on the major rows
     const v = (i / NY) * maxV;
     const yy = yBot - hOf(v);
-    yticks += `<line x1="${x0}" y1="${yy.toFixed(1)}" x2="${(x0 + plotW).toFixed(1)}" y2="${yy.toFixed(1)}" stroke="#1a1f2c"/>` +
-      `<text x="${(x0 - 8).toFixed(1)}" y="${(yy + 3).toFixed(1)}" fill="#6b7280" font-size="10" text-anchor="end">${escapeHtml(fmtUsd(v))}</text>`;
+    grid += `<text x="${(x0 - 8).toFixed(1)}" y="${(yy + 3).toFixed(1)}" fill="#6b7280" font-size="10" text-anchor="end">${escapeHtml(fmtUsd(v))}</text>`;
   }
 
   // stacked bars (long + short per tier, colored by leverage)
@@ -111,7 +120,6 @@ function renderSvg(token, map) {
 
   // x ticks
   let xticks = '';
-  const NX = 8;
   for (let i = 0; i <= NX; i++) {
     const p = lo + (i / NX) * (hi - lo);
     const xx = xOf(p);
@@ -125,7 +133,7 @@ function renderSvg(token, map) {
     `<text x="${px.toFixed(1)}" y="${(y0 - 6).toFixed(1)}" fill="#e6e9ef" font-size="12" font-weight="700" text-anchor="middle">${escapeHtml(fmtPrice(map.price))}</text>`;
 
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" class="liqmap" data-token="${escapeHtml(token)}">` +
-    zones + yticks + bars + cumLine + xticks + priceLine + rAxis + `</svg>`;
+    zones + grid + bars + cumLine + xticks + priceLine + rAxis + `</svg>`;
 }
 
 // ===== reality-check panel: model walls vs ACTUAL OI destruction, in offset space (% from price) =====
@@ -162,6 +170,14 @@ function renderBacktestSvg(bt, token) {
     `<rect x="${x0}" y="${y0}" width="${(px - x0).toFixed(1)}" height="${plotH}" fill="#ff47570a"/>` +
     `<rect x="${px.toFixed(1)}" y="${y0}" width="${(x0 + plotW - px).toFixed(1)}" height="${plotH}" fill="#2ed5730a"/>`;
 
+  // vertical sector lines only — each curve here is normalized to its own max, so
+  // horizontal cells would invite false cross-curve height comparisons
+  let grid = '';
+  for (let i = 1; i < 16; i++) {
+    const xx = x0 + (i / 16) * plotW;
+    grid += `<line x1="${xx.toFixed(1)}" y1="${y0}" x2="${xx.toFixed(1)}" y2="${yBot}" stroke="${i % 2 ? '#1a202e' : '#262e40'}"/>`;
+  }
+
   // resting walls (raw model) — soft gray silhouette in the back ("where the fuel sits")
   const restingArea = `<path d="${areaPath(resting, restingMax, 0, bt.n - 1)}" fill="#8b93a7" fill-opacity="0.12"/>`;
   // reach-weighted expected liquidations — clean side-colored lines (red longs / green shorts)
@@ -188,7 +204,7 @@ function renderBacktestSvg(bt, token) {
     `<text x="${(x0 + plotW - 6).toFixed(1)}" y="${(y0 + 13).toFixed(1)}" fill="#51cf66" font-size="10" font-weight="600" text-anchor="end">shorts liquidate ▶</text>`;
 
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" class="btmap" data-token="${escapeHtml(token)}">` +
-    zones + restingArea + adjLines + realLine + xticks + priceLine + `</svg>`;
+    zones + grid + restingArea + adjLines + realLine + xticks + priceLine + `</svg>`;
 }
 
 const fmtPct1 = (frac) => frac == null ? '—' : ((frac >= 0 ? '+' : '') + (frac * 100).toFixed(1) + '%');
