@@ -17,7 +17,7 @@
 
 import yaml from 'js-yaml';
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync } from 'fs';
-import { execFile } from 'child_process';
+import { macNotify } from './lib/notify.mjs';
 
 const ROOT = new URL('./', import.meta.url);
 const DIR = new URL('./liquidations/', ROOT);
@@ -46,10 +46,11 @@ function record(venue, tok, ev) {
 // ===== V6 real-time alerts — macOS notification + alerts.jsonl, cooldown-throttled =====
 const cooldowns = {};
 const canAlert = (key, mins) => { const n = Date.now(); if (cooldowns[key] && n - cooldowns[key] < mins * 60e3) return false; cooldowns[key] = n; return true; };
+const ALERT_LINGER = config.alert_linger_secs ?? 30; // seconds a signal popup stays on screen
 function alert(type, tok, title, body) {
   console.log(`ALERT ${type} ${tok}: ${title} — ${body}`);
   try { appendFileSync(new URL('alerts.jsonl', DIR), JSON.stringify({ ts: Date.now(), type, tok, title, body }) + '\n'); } catch {}
-  try { execFile('osascript', ['-e', `display notification ${JSON.stringify(body)} with title ${JSON.stringify(title)} sound name "Submarine"`]); } catch {}
+  macNotify(title, body, ALERT_LINGER);
 }
 
 // context for thresholds: token OI (data.json) + latest modeled top-5 walls (snapshots),

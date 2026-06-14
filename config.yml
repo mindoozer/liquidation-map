@@ -119,3 +119,10 @@ path_survivorship: true
 long_short_skew:
   source: positions
   tilt: 0.35
+
+# How long a signal popup (liq burst / wall sweep / squeeze flip) lingers on screen.
+# macOS notification banners can't be told to stay (~5s, no duration param), so alerts
+# also fire a "display alert ... giving up after N" dialog that stays this many seconds.
+#   N seconds → auto-dismiss after N · 0 → notification only (no lingering dialog) ·
+#   -1 → dialog stays until you click it
+alert_linger_secs: 30

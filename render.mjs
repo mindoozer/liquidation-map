@@ -29,6 +29,7 @@ const fmtUsd = (n) => {
 const fmtPrice = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: n < 100 ? 2 : 0 });
 const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmtFunding = (x) => x == null ? '—' : ((x >= 0 ? '+' : '') + (x * 100).toFixed(3) + '%/8h');
+const fmtAge = (ms) => { const m = Math.round(ms / 60000); return m < 60 ? m + 'm' : (m / 60).toFixed(1) + 'h'; };
 
 // crowding strip: verdict + every component it was computed from (no black box)
 function squeezeStrip(sq) {
@@ -293,8 +294,9 @@ function renderToken(symbol, tokenData, isFirst) {
     return { html: `<section class="${cls}" data-token="${escapeHtml(symbol)}"><h2>${escapeHtml(symbol)}</h2><div class="empty">No data — check fetch errors below.</div></section>`, payload: null, tab: { symbol, price: null } };
   }
 
+  const nowMs = Date.now();
   const venueBreak = map.venues.length
-    ? map.venues.map((v) => `${v.exchange} ${fmtUsd(v.openInterestUsd)}`).join(' · ')
+    ? map.venues.map((v) => `${v.exchange} ${fmtUsd(v.openInterestUsd)}${v.stale && v.staleAsOf ? ` ⏱${fmtAge(nowMs - Date.parse(v.staleAsOf))}` : ''}`).join(' · ')
     : '—';
   const cum = cumulativeVolume(map);
   // crowding/squeeze read — never let it break the board
@@ -329,6 +331,7 @@ function renderToken(symbol, tokenData, isFirst) {
           ? ` <span class="dim">${map.lsSource === 'neutral' ? 'neutral' : `damped from ${(map.longFracRaw * 100).toFixed(0)}% ${map.lsPosVenues ? `pos-ratio×${map.lsPosVenues}` : ''}${map.lsPosVenues && map.lsAcctVenues ? '+' : ''}${map.lsAcctVenues ? `acct×${map.lsAcctVenues}` : ''}`}</span>`
           : ' <span class="dim">(no L/S data)</span>'}</span>
         <span class="stat">${map.venues.length} venue${map.venues.length === 1 ? '' : 's'} <span class="dim">${escapeHtml(venueBreak)}</span></span>
+        ${map.staleVenues?.length ? `<span class="stat" style="color:#ffd43b">⏱ <b>${escapeHtml(map.staleVenues.join(', '))}</b> stale <span class="dim">last-good data — venue fetch currently failing</span></span>` : ''}
         ${map.weighting === 'oi-delta' ? `<span class="stat"><b>OI-Δ weighted</b> <span class="dim">${map.oiVenues}/${map.venues.length} venues · rest volume</span></span>` : ''}
       </div>
     </div>

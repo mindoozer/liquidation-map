@@ -18,9 +18,9 @@
 
 import yaml from 'js-yaml';
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from 'fs';
-import { execFile } from 'child_process';
 import { buildMap } from './lib/model.mjs';
 import { computeSqueeze } from './lib/squeeze.mjs';
+import { macNotify } from './lib/notify.mjs';
 
 const LIQ_DIR = new URL('./liquidations/', import.meta.url);
 
@@ -93,7 +93,7 @@ for (const [symbol, tokenData] of Object.entries(tokens || {})) {
       const dir = sq.score > 0 ? 'LONG-squeeze (downside)' : 'SHORT-squeeze (upside)';
       const body = `${symbol}: ${dir} ${sq.level} — funding ${sq.funding8h != null ? (sq.funding8h * 100).toFixed(3) + '%/8h' : '—'}, fuel ↓$${Math.round(sq.fuelL / 1e6)}M/↑$${Math.round(sq.fuelS / 1e6)}M`;
       console.error(`squeeze flip: ${body}`);
-      try { execFile('osascript', ['-e', `display notification ${JSON.stringify(body)} with title ${JSON.stringify(symbol + ' squeeze setup')} sound name "Submarine"`]); } catch {}
+      macNotify(`${symbol} squeeze setup`, body, config.alert_linger_secs ?? 30);
     }
   } catch (e) {
     console.error(`snapshot ${symbol} failed: ${e.message}`);
