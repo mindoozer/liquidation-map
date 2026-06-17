@@ -56,6 +56,17 @@ tokens:
       - { lev: 2, weight: 0.45, half_life_days: 14, color: '#3b82f6', label: '2×' }   # liq ≈ −40%/+40%
       - { lev: 3, weight: 0.35, half_life_days: 7,  color: '#22c55e', label: '3×' }   # liq ≈ −23%/+23%
       - { lev: 5, weight: 0.20, half_life_days: 2,  color: '#ef4444', label: '5×' }   # liq ≈ −10%/+10%
+  - symbol: MSTR
+    name: Strategy (MSTR)
+    hyperliquid: "xyz:MSTR"          # HIP-3 equity perp on HL xyz dex (~$25M OI; not on CEXes/dYdX)
+    max_leverage: 10                 # asset cap on HL
+    maintenance_margin_rate: 0.05    # HL maintenance = 1/(2·maxLev) = 5%
+    leverage_tiers:                  # equity perp — own low-lev ladder (global 10–100× N/A)
+      - { lev: 2,  weight: 0.35, half_life_days: 14, color: '#3b82f6', label: '2×' }   # liq ≈ ∓45%
+      - { lev: 5,  weight: 0.40, half_life_days: 5,  color: '#22c55e', label: '5×' }   # liq ≈ ∓15%
+      - { lev: 10, weight: 0.25, half_life_days: 2,  color: '#ef4444', label: '10×' }  # liq ≈ ∓5%
+  # Metaplanet (MTPLF / 3350.T): NOT available — no perp on any covered venue (checked HL
+  # HIP-3 all dexs + main universe 2026-06-15). Re-probe if a builder deploys xyz:METAPLANET.
 
 # --- venues to aggregate (toggle on/off; mixed into one normalized map) ---
 venues:
