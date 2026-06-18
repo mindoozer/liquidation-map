@@ -6,6 +6,7 @@
 tokens:
   - symbol: BTC
     name: Bitcoin
+    farside: btc                     # Farside ETF-flow slug → daily net flow feeds the squeeze vote
     binance: BTCUSDT
     bybit: BTCUSDT
     okx: BTC-USDT-SWAP

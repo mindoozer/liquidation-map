@@ -14,6 +14,7 @@ export GIT_TERMINAL_PROMPT=0   # fail fast instead of hanging if git credentials
 ts="$(date '+%Y-%m-%d %H:%M:%S')"
 echo "[$ts] fetch + render"
 node fetch.mjs
+node etf-flows.mjs || echo "[$ts] etf-flows failed (non-fatal)"
 node snapshot.mjs || echo "[$ts] snapshot failed (non-fatal)"
 node magnet-study.mjs || echo "[$ts] magnet study failed (non-fatal)"
 node render.mjs

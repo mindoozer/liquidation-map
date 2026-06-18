@@ -81,6 +81,7 @@ for (const [symbol, tokenData] of Object.entries(tokens || {})) {
       f8: map.funding8h != null ? +map.funding8h.toFixed(6) : null,
       fuel5: sq ? [Math.round(sq.fuelL), Math.round(sq.fuelS)] : null,
       sqz: sq ? sq.score : null,
+      etf: sq && sq.etfUsdM != null ? sq.etfUsdM : null,    // daily ETF net flow (US$m), where tracked
       ven,
       win: [+(((map.range.lo - map.price) / map.price) * 100).toFixed(1), +(((map.range.hi - map.price) / map.price) * 100).toFixed(1)],
       cum, top,

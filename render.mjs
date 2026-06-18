@@ -40,6 +40,7 @@ function squeezeStrip(sq) {
     `funding <b>${escapeHtml(fmtFunding(sq.funding8h))}</b>`,
     `fuel ±5%: <b>↓${escapeHtml(fmtUsd(sq.fuelL))}</b> / <b>↑${escapeHtml(fmtUsd(sq.fuelS))}</b>`,
     sq.longShare != null ? `24h real liqs <b>${Math.round(sq.longShare * 100)}% long</b> <span class="dim">of ${escapeHtml(fmtUsd(rTot))}</span>` : '24h real liqs <span class="dim">none</span>',
+    sq.etfUsdM != null ? `ETF flow <b>${sq.etfUsdM >= 0 ? '+' : '−'}$${Math.abs(sq.etfUsdM).toFixed(0)}M</b> <span class="dim">${escapeHtml(sq.etfDate || '')}</span>` : '',
     sq.absorb != null && isFinite(sq.absorb) ? `top wall ≈ <b>${sq.absorb.toFixed(1)}×</b> hourly vol` : '',
   ].filter(Boolean).join(' &nbsp;·&nbsp; ');
   return `<div class="squeeze ${cls}"><span class="sqh">${head}</span><span class="sqd">${parts}</span></div>`;

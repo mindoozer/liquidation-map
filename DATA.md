@@ -47,7 +47,7 @@ Tokens (+ per-token symbol maps, `max_leverage`, `maintenance_margin_rate`, cust
 **kline:** `t (epoch ms) · o · h · l · c (quote px) · volUsd · oiUsd (nullable — see recent-only note)`.
 
 ### `snapshots/<TOK>.jsonl` — one model snapshot per token per ~30-min tick (append; dedup by `ts`)
-`v:1 · mv (model gen) · ts (ISO) · tok · px · oi (USD) · lsRaw (raw long frac) · lsUsed (damped) · f8 (funding/8h) · fuel5 [longUSD, shortUSD within ±5%] · sqz (squeeze score int) · ven {exchange: oiUsd} · win [loPct, hiPct display window] · cum {offsetPct: cumUSD} (keys −20/−10/−5/−2/2/5/10/20) · top [[offsetPct, wallUSD] × 10]`
+`v:1 · mv (model gen) · ts (ISO) · tok · px · oi (USD) · lsRaw (raw long frac) · lsUsed (damped) · f8 (funding/8h) · fuel5 [longUSD, shortUSD within ±5%] · sqz (squeeze score int) · etf (daily ETF net flow US$m, where tracked, else null) · ven {exchange: oiUsd} · win [loPct, hiPct display window] · cum {offsetPct: cumUSD} (keys −20/−10/−5/−2/2/5/10/20) · top [[offsetPct, wallUSD] × 10]`
 Built for **forward validation** (predicted walls vs later price) and a **self-built full-window OI history** (`ven`, incl. Hyperliquid) that no free API gives.
 
 ### `liquidations/<TOK>.jsonl` — real liquidation events (append; ws + poll)
@@ -60,6 +60,7 @@ Built for **forward validation** (predicted walls vs later price) and a **self-b
 - `liquidations/.collector-status.json` — `startedAt · events{venue:n} · lastEventAt{venue:ISO} · lastMsgAt{venue:epoch}`. Counters **reset on daemon restart** (the JSONL files are cumulative).
 - `liquidations/.poll-state.json` — REST watermarks `{venue: {tok: ts}}`.
 
-### derived (regenerated each tick, gitignored)
+### derived (regenerated, gitignored)
 - `magnet.json` — `generatedAt · horizonH · firstSnapshot · totalWalls · tokens{SYM:{samples}} · pooled[{bucket, n, touch, base, lift}]`. Forward magnet test.
 - `calibration.json` — `generatedAt · iters · adoptMargin · proxyVsReal[] · calibration[]`. From `calibrate.mjs` (on-demand).
+- `etf-flows.json` — `updatedAt · flows{SYM:{usdM (daily net, US$m), date, asOf}}`. Daily ETF net flow, scraped best-effort from Farside (via the jobs-phuket Playwright, self-throttled to ≤4×/day). Feeds the 4th squeeze vote (inflow → upside/short-squeeze) only when |flow| ≥ 1% of the token's OI. Tokens opt in via `farside:` in config (currently BTC). Brittle by nature (Cloudflare) — degrades to no-vote if the scrape fails.
