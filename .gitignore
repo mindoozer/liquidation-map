@@ -10,3 +10,8 @@ magnet.json
 
 calibration.json
 etf-flows.json
+.notify-mute
+data/
+klines/
+# agent worktrees (Agent tool, isolation:"worktree") — never a gitlink; see root check-resolvable.sh assert (7)
+.claude/worktrees/

@@ -90,6 +90,29 @@ for (const t of config.tokens || []) {
     } catch (e) { console.error(`  dydx/${tok} FAILED: ${e.message}`); }
   }
 
+  // ---- Gate.io: public liq_orders — individual liquidation fills, keyless (added 2026-07-09) ----
+  // {contract, size, order_size, fill_price, time(SECONDS)}. Side from the FORCED ORDER's sign:
+  // order_size < 0 = forced sell = a LONG was liquidated. size is in contracts → usd needs the
+  // contract's quanto_multiplier (fetched per tick; cheap). No event id → deterministic synth id;
+  // the watermark handles overlap dedup. Fixed 1h window like HTX.
+  if (t.gate) {
+    try {
+      const from = since('gate', tok);
+      const toS = Math.floor(NOW / 1000);
+      const winStartS = toS - 3600 + 5; // range must be STRICTLY ≤ 3600s — 3601 gets HTTP 400
+      if (from < winStartS * 1000 - 60e3) console.error(`  gate/${tok}: watermark ${Math.round((NOW - from) / 60e3)}min old > 1h lookback — gap possible`);
+      const [det, rows] = await Promise.all([
+        j(`https://api.gateio.ws/api/v4/futures/usdt/contracts/${t.gate}`),
+        j(`https://api.gateio.ws/api/v4/futures/usdt/liq_orders?contract=${t.gate}&from=${winStartS}&to=${toS}&limit=1000`),
+      ]);
+      const mult = +det.quanto_multiplier || 1;
+      const events = (rows || [])
+        .filter((r) => r.time * 1000 > from)
+        .map((r, i) => ({ ts: r.time * 1000, side: +r.order_size < 0 ? 'long' : 'short', px: +r.fill_price, usd: Math.abs(+r.size) * mult * +r.fill_price, id: `gate-${r.time}-${r.size}-${r.fill_price}-${i}` }));
+      log('gate', tok, commit('gate', tok, events), (rows || []).length >= 1000 ? ' (page cap? possible truncation)' : '');
+    } catch (e) { console.error(`  gate/${tok} FAILED: ${e.message}`); }
+  }
+
   // ---- Kraken Futures: public history, type=liquidation (page back to watermark) ----
   if (t.kraken) {
     try {

@@ -13,7 +13,9 @@
 //
 // Schema v1 (one line): { v, ts, tok, px, oi, lsRaw, lsUsed, ven: {exchange: oiUsd},
 //   win: [loPct, hiPct], cum: {"-20","-10","-5","-2","2","5","10","20": usd},
-//   top: [[offsetPct, usd] x10] }
+//   top: [[offsetPct, usd] x10],
+//   conc: { l, s: {hm half-mass %, n2 frac within 2%, pk peak offset %, ps peak share, lab TIGHT|MIXED|SPREAD},
+//           ig: {side closer-fuel side 'long'|'short'|'symmetric', gap half-mass gap pp} } — per-side concentration, diagnostic }
 // cum values beyond the auto-fit window clamp to that side's window total (~98% of mass).
 
 import yaml from 'js-yaml';
@@ -71,7 +73,12 @@ for (const [symbol, tokenData] of Object.entries(tokens || {})) {
 
     // squeeze read (funding + fuel asymmetry + realized pressure) — optional, never fatal
     let sq = null;
-    try { sq = computeSqueeze(map, tokenData, LIQ_DIR, symbol); } catch {}
+    try { sq = computeSqueeze(map, tokenData, LIQ_DIR, symbol, config); } catch {}
+
+    // per-side spatial concentration (diagnostic, NOT scored) — compact form for forward validation
+    const cc = map.concentration;
+    const cside = (s) => s && { hm: s.halfMassPct, n2: s.nearFrac2, pk: s.peakOffPct, ps: s.peakShare, lab: s.label };
+    const conc = cc ? { l: cside(cc.long), s: cside(cc.short), ig: cc.ignition ? { side: cc.ignition.closerSide, gap: cc.ignition.gapPct } : null } : null;
 
     const line = {
       v: 1, mv: 3, ts: fetchedAt, tok: symbol, // mv = model generation (3 = damped pos-ratio skew + path survivorship)
@@ -84,7 +91,7 @@ for (const [symbol, tokenData] of Object.entries(tokens || {})) {
       etf: sq && sq.etfUsdM != null ? sq.etfUsdM : null,    // daily ETF net flow (US$m), where tracked
       ven,
       win: [+(((map.range.lo - map.price) / map.price) * 100).toFixed(1), +(((map.range.hi - map.price) / map.price) * 100).toFixed(1)],
-      cum, top,
+      cum, top, conc,
     };
     appendFileSync(file, JSON.stringify(line) + '\n');
     logged++;

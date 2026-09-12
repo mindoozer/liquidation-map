@@ -15,6 +15,9 @@ tokens:
     htx: BTC-USDT
     kraken: PF_XBTUSD
     coinbase: BTC-PERP-INTX
+    gate: BTC_USDT
+    bitget: BTCUSDT
+    kucoin: XBTUSDTM                 # KuCoin says XBT, not BTC
   - symbol: NMR
     name: Numeraire
     binance: NMRUSDT
@@ -22,6 +25,9 @@ tokens:
     okx: NMR-USDT-SWAP
     kraken: PF_NMRUSD
     dydx: NMR-USD
+    gate: NMR_USDT                   # ~$0.4M OI — noise-level but NMR global is only ~$17M
+    bitget: NMRUSDT
+    kucoin: NMRUSDTM
     max_leverage: 25                 # small-cap: tiers 10×/25× only
     maintenance_margin_rate: 0.015   # ~1.5% (alts higher than BTC's 0.4%)
   - symbol: ZEC
@@ -34,10 +40,14 @@ tokens:
     coinbase: ZEC-PERP-INTX
     hyperliquid: ZEC
     dydx: ZEC-USD
+    gate: ZEC_USDT
+    bitget: ZECUSDT
+    kucoin: ZECUSDTM
     max_leverage: 50                 # mid-cap: tiers 10×/25×/50× (drops 100×)
     maintenance_margin_rate: 0.01    # ~1%
   - symbol: HYPE
     name: Hyperliquid
+    farside: hyp                     # Farside ETF-flow slug (BHYP/THYP/HYPG) → daily net flow feeds the squeeze vote
     binance: HYPEUSDT
     bybit: HYPEUSDT
     okx: HYPE-USDT-SWAP
@@ -46,11 +56,21 @@ tokens:
     coinbase: HYPE-PERP-INTX
     hyperliquid: HYPE
     dydx: HYPE-USD
+    gate: HYPE_USDT                  # Gate funds HYPE per 4h — adapter normalizes to /8h
+    bitget: HYPEUSDT                 # exact symbol — HYPERUSDT is a different token
+    kucoin: HYPEUSDTM
     max_leverage: 25                 # volatile large-cap; HL caps HYPE at 10×, tiers 10×/25×
     maintenance_margin_rate: 0.01
   - symbol: SPACEX
     name: SpaceX
-    hyperliquid: "xyz:SPCX"          # HIP-3 pre-IPO perp on HL's xyz dex (~$294M OI at add time; vntl:SPACEX is ~$3M dust)
+    hyperliquid: "xyz:SPCX"          # HIP-3 perp on HL's xyz dex (~$294M OI at add time; vntl:SPACEX is ~$3M dust)
+    # SpaceX IPO'd 2026-06-12 (NASDAQ: SPCX @ $135) — no longer pre-IPO; SPCX perps then
+    # appeared across venues (multi-sourced 2026-07-09, was HL-only):
+    coinbase: SPCX-PERP-INTX
+    kraken: PF_SPCXXUSD
+    gate: SPCX_USDT
+    bitget: SPCXUSDT                 # listed 2026-06-09 → 1h kline history starts there
+    kucoin: SPCXUSDTM
     max_leverage: 5                  # asset cap on HL
     maintenance_margin_rate: 0.10    # HL maintenance = 1/(2·maxLev) = 10%
     leverage_tiers:                  # global 10–100× ladder impossible here — own low-lev ladder
@@ -59,7 +79,11 @@ tokens:
       - { lev: 5, weight: 0.20, half_life_days: 2,  color: '#ef4444', label: '5×' }   # liq ≈ −10%/+10%
   - symbol: MSTR
     name: Strategy (MSTR)
-    hyperliquid: "xyz:MSTR"          # HIP-3 equity perp on HL xyz dex (~$25M OI; not on CEXes/dYdX)
+    hyperliquid: "xyz:MSTR"          # HIP-3 equity perp on HL xyz dex (~$25M OI at add time)
+    kraken: PF_MSTRXUSD              # exact symbol — PF_HMSTRUSD is Hamster Kombat, not MSTR
+    gate: MSTRX_USDT
+    bitget: MSTRUSDT
+    kucoin: MSTRUSDTM
     max_leverage: 10                 # asset cap on HL
     maintenance_margin_rate: 0.05    # HL maintenance = 1/(2·maxLev) = 5%
     leverage_tiers:                  # equity perp — own low-lev ladder (global 10–100× N/A)
@@ -79,6 +103,9 @@ venues:
   htx:         { enabled: true }   # CEX
   kraken:      { enabled: true }   # CEX (Kraken Futures, linear PF)
   coinbase:    { enabled: true }   # CEX (Coinbase Intl perp)
+  gate:        { enabled: true }   # CEX (added 2026-07-09: 180d hourly OI history + L/S + liq feed; OI halved to one-sided)
+  bitget:      { enabled: true }   # CEX (added 2026-07-09: all 6 tokens incl SPCX/MSTR equity perps)
+  kucoin:      { enabled: true }   # CEX (added 2026-07-09: all 6 tokens; 200-candle kline pages)
 
 # --- klines window: the "where positions were opened" proxy ---
 lookback:
@@ -131,6 +158,21 @@ path_survivorship: true
 long_short_skew:
   source: positions
   tilt: 0.35
+
+# --- squeeze-score vote gates (lib/squeeze.mjs) ---
+# fuel_min_usd: materiality floor for the fuel-asymmetry vote when one side within ±5% is
+#   EMPTY (maximal asymmetry — the norm on the small SPACEX/MSTR books, where low leverage
+#   puts most liq levels outside ±5%). The empty-side case votes toward the loaded side only
+#   if that side holds ≥ this much; it abstains when BOTH sides are below it. $100k is dust
+#   next to BTC/HYPE fuel (~$0.1–5B within ±5%) and below the loaded side seen on live
+#   SPACEX/MSTR snapshots (median ~$2M, rarely <$100k) — real one-sided books vote, noise
+#   doesn't. The normal both-sides-nonzero ratio vote ignores this floor (unchanged).
+# etf_max_age_h: staleness gate for the ETF-flow vote. Flows are DAILY (Farside) and the
+#   scrape self-throttles to 6h; a last-good scrape older than 30h means a full daily update
+#   cycle was missed — the vote abstains and the page marks the flow "stale — not voting".
+squeeze:
+  fuel_min_usd: 100000
+  etf_max_age_h: 30
 
 # How long a signal popup (liq burst / wall sweep / squeeze flip) lingers on screen.
 # macOS notification banners can't be told to stay (~5s, no duration param), so alerts

@@ -6,7 +6,10 @@
   "scripts": {
     "fetch": "node fetch.mjs",
     "render": "node render.mjs",
-    "refresh": "bash refresh.sh"
+    "refresh": "bash refresh.sh",
+    "mute": "node mute.mjs",
+    "unmute": "node mute.mjs off",
+    "mute:status": "node mute.mjs status"
   },
   "dependencies": {
     "js-yaml": "^4.1.0"

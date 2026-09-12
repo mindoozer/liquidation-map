@@ -31,6 +31,37 @@ const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&a
 const fmtFunding = (x) => x == null ? '—' : ((x >= 0 ? '+' : '') + (x * 100).toFixed(3) + '%/8h');
 const fmtAge = (ms) => { const m = Math.round(ms / 60000); return m < 60 ? m + 'm' : (m / 60).toFixed(1) + 'h'; };
 
+// price-anchored vertical grid: lines at ROUND % offsets from the current price, radiating
+// from 0 (the price line) — so n cells left of price ≡ n cells right, which is the sector
+// grid's whole purpose (edge-anchored columns made the two sides incomparable). Major step
+// auto-picked so the wider side gets ≤ ~9 majors; minors at half-step; offsets the rest of
+// the system already speaks (±2/5/10/20% — snapshot cum keys, ±5% fuel band, magnet buckets)
+// drawn slightly brighter when they land on a major. Window edges keep partial cells (the
+// auto-fit window stays asymmetric on purpose — it shows where the mass is; only the ruler
+// is symmetric).
+const SEMANTIC_OFFS = [2, 5, 10, 20];
+function gridStepPct(loFrac, hiFrac) {
+  const wide = Math.max(-loFrac, hiFrac) * 100;
+  for (const s of [0.5, 1, 2, 2.5, 5, 10]) if (wide / s <= 9) return s;
+  return 10;
+}
+function vGridlines(xOfOff, loFrac, hiFrac, y0, yBot) {
+  const step = gridStepPct(loFrac, hiFrac);
+  const half = step / 2;
+  let g = '';
+  const majors = [];
+  for (let k = Math.ceil(loFrac * 100 / half); k * half <= hiFrac * 100 + 1e-9; k++) {
+    if (k === 0) { majors.push(0); continue; }          // 0 = the price line (panel draws it)
+    const offPct = k * half;
+    const major = k % 2 === 0;
+    if (major) majors.push(offPct);
+    const semantic = major && SEMANTIC_OFFS.includes(Math.abs(offPct));
+    const xx = xOfOff(offPct / 100);
+    g += `<line x1="${xx.toFixed(1)}" y1="${y0}" x2="${xx.toFixed(1)}" y2="${yBot}" stroke="${semantic ? '#39445f' : major ? '#262e40' : '#1a202e'}"/>`;
+  }
+  return { g, step, majors };
+}
+
 // crowding strip: verdict + every component it was computed from (no black box)
 function squeezeStrip(sq) {
   const head = sq.dir === 'long' ? `▼ Long-squeeze ${sq.level}` : sq.dir === 'short' ? `▲ Short-squeeze ${sq.level}` : '— crowding balanced';
@@ -40,10 +71,28 @@ function squeezeStrip(sq) {
     `funding <b>${escapeHtml(fmtFunding(sq.funding8h))}</b>`,
     `fuel ±5%: <b>↓${escapeHtml(fmtUsd(sq.fuelL))}</b> / <b>↑${escapeHtml(fmtUsd(sq.fuelS))}</b>`,
     sq.longShare != null ? `24h real liqs <b>${Math.round(sq.longShare * 100)}% long</b> <span class="dim">of ${escapeHtml(fmtUsd(rTot))}</span>` : '24h real liqs <span class="dim">none</span>',
-    sq.etfUsdM != null ? `ETF flow <b>${sq.etfUsdM >= 0 ? '+' : '−'}$${Math.abs(sq.etfUsdM).toFixed(0)}M</b> <span class="dim">${escapeHtml(sq.etfDate || '')}</span>` : '',
+    sq.etfUsdM != null ? `ETF flow <b>${sq.etfUsdM >= 0 ? '+' : '−'}$${Math.abs(sq.etfUsdM).toFixed(0)}M</b> <span class="dim">${escapeHtml(sq.etfDate || '')}</span>${sq.etfStale ? ' <b style="color:#ffd43b">⏱ stale — not voting</b>' : ''}` : '',
     sq.absorb != null && isFinite(sq.absorb) ? `top wall ≈ <b>${sq.absorb.toFixed(1)}×</b> hourly vol` : '',
   ].filter(Boolean).join(' &nbsp;·&nbsp; ');
   return `<div class="squeeze ${cls}"><span class="sqh">${head}</span><span class="sqd">${parts}</span></div>`;
+}
+
+// concentration / "detonability" strip: how each side's modeled fuel is distributed in
+// DISTANCE (offset space), normalized to that side's own mass. Net size ≠ ignition risk —
+// a tight near-price wall cascades; the same $ smeared far out doesn't. DIAGNOSTIC, not
+// scored (gated on real-liq validation). Sits beside the crowding read because together
+// they answer "which side squeezes": crowding = how much fuel, this = how detonable.
+function concentrationStrip(c) {
+  if (!c || (!c.long && !c.short)) return '';
+  const ig = c.ignition;
+  const head = ig?.closerSide === 'short' ? '▲ Upside ignition closer'
+    : ig?.closerSide === 'long' ? '▼ Downside ignition closer'
+    : '◇ ignition ~symmetric';
+  const cls = ig?.closerSide === 'short' ? 'sq-short' : ig?.closerSide === 'long' ? 'sq-long' : 'sq-neutral';
+  const side = (s, arrow, sign) => s == null ? '' :
+    `${arrow} <b>${escapeHtml(s.label || '—')}</b> <span class="dim">half-mass ${sign}${s.halfMassPct ?? '—'}%, ${Math.round((s.nearFrac2 ?? 0) * 100)}% within 2%, peak ${sign}${s.peakOffPct}%</span>`;
+  const parts = [side(c.long, '↓ longs', '−'), side(c.short, '↑ shorts', '+')].filter(Boolean).join(' &nbsp;·&nbsp; ');
+  return `<div class="squeeze conc ${cls}"><span class="sqh">${escapeHtml(head)}</span><span class="sqd">${parts}</span></div>`;
 }
 
 // cumulative liquidation notional from the price line outward, per displayed bin.
@@ -80,18 +129,17 @@ function renderSvg(token, map) {
     `<text x="${(x0 + plotW - 8).toFixed(1)}" y="${(y0 + 15).toFixed(1)}" fill="#51cf66" font-size="11" font-weight="600" text-anchor="end">shorts liquidate ▶</text>`;
 
   // sector-grid underlay — squares make long vs short magnitudes comparable by eye
-  // (count cells either side of the price line). Major lines at ticks, faint minors at
-  // half-steps; 8×4 ticks ≈ square cells at this aspect ratio.
+  // (count cells either side of the price line). Verticals are PRICE-ANCHORED at round
+  // % offsets (see vGridlines): 0 = the price line, so cells mirror across it.
   let grid = '';
-  const NY = 4, NX = 8;
+  const NY = 4;
   for (let i = 1; i < NY * 2; i++) {           // horizontals (skip plot top/bottom edges)
     const yy = yBot - (i / (NY * 2)) * plotH;
     grid += `<line x1="${x0}" y1="${yy.toFixed(1)}" x2="${(x0 + plotW).toFixed(1)}" y2="${yy.toFixed(1)}" stroke="${i % 2 ? '#1a202e' : '#262e40'}"/>`;
   }
-  for (let i = 1; i < NX * 2; i++) {           // verticals
-    const xx = x0 + (i / (NX * 2)) * plotW;
-    grid += `<line x1="${xx.toFixed(1)}" y1="${y0}" x2="${xx.toFixed(1)}" y2="${yBot}" stroke="${i % 2 ? '#1a202e' : '#262e40'}"/>`;
-  }
+  const loFrac = (lo - map.price) / map.price, hiFrac = (hi - map.price) / map.price;
+  const vg = vGridlines((off) => xOf(map.price * (1 + off)), loFrac, hiFrac, y0, yBot);
+  grid += vg.g;
   for (let i = 1; i <= NY; i++) {              // left-axis $ labels on the major rows
     const v = (i / NY) * maxV;
     const yy = yBot - hOf(v);
@@ -138,19 +186,24 @@ function renderSvg(token, map) {
       `<text x="${(x0 + plotW + 7).toFixed(1)}" y="${(yy + 3).toFixed(1)}" fill="#aeb4c0" font-size="9" text-anchor="start">${escapeHtml(fmtUsd(v))}</text>`;
   }
 
-  // x ticks
+  // x ticks — on the major gridlines: offset % (the grid's unit) over the price it maps to
   let xticks = '';
-  for (let i = 0; i <= NX; i++) {
-    const p = lo + (i / NX) * (hi - lo);
+  const fmtOff = (o) => (o > 0 ? '+' : o < 0 ? '−' : '') + (Math.abs(o) % 1 ? Math.abs(o).toFixed(1) : Math.abs(o)) + (o === 0 ? '' : '%');
+  for (const offPct of vg.majors) {
+    const p = map.price * (1 + offPct / 100);
     const xx = xOf(p);
     xticks += `<line x1="${xx.toFixed(1)}" y1="${yBot}" x2="${xx.toFixed(1)}" y2="${(yBot + 5).toFixed(1)}" stroke="#3a4152"/>` +
-      `<text x="${xx.toFixed(1)}" y="${(yBot + 18).toFixed(1)}" fill="#9ca3af" font-size="10" text-anchor="middle">${escapeHtml(fmtPrice(p))}</text>`;
+      `<text x="${xx.toFixed(1)}" y="${(yBot + 16).toFixed(1)}" fill="#9ca3af" font-size="10" font-weight="${SEMANTIC_OFFS.includes(Math.abs(offPct)) || offPct === 0 ? '600' : '400'}" text-anchor="middle">${escapeHtml(fmtOff(offPct))}</text>` +
+      `<text x="${xx.toFixed(1)}" y="${(yBot + 29).toFixed(1)}" fill="#6b7280" font-size="9" text-anchor="middle">${escapeHtml(fmtPrice(p))}</text>`;
   }
 
-  // current price line
+  // current price line — static dashed = build-time reference (dimmed); bright cyan = live,
+  // repositioned client-side by a WebSocket feed (see #livecfg + the live script).
   const priceLine =
-    `<line x1="${px.toFixed(1)}" y1="${y0 - 2}" x2="${px.toFixed(1)}" y2="${yBot}" stroke="#e6e9ef" stroke-width="1.5" stroke-dasharray="4 3"/>` +
-    `<text x="${px.toFixed(1)}" y="${(y0 - 6).toFixed(1)}" fill="#e6e9ef" font-size="12" font-weight="700" text-anchor="middle">${escapeHtml(fmtPrice(map.price))}</text>`;
+    `<line x1="${px.toFixed(1)}" y1="${y0 - 2}" x2="${px.toFixed(1)}" y2="${yBot}" stroke="#7b8296" stroke-width="1.5" stroke-dasharray="4 3"/>` +
+    `<text x="${px.toFixed(1)}" y="${(y0 - 6).toFixed(1)}" fill="#6b7280" font-size="10" text-anchor="middle">build ${escapeHtml(fmtPrice(map.price))}</text>` +
+    `<line class="pxlive-line" data-token="${escapeHtml(token)}" x1="${px.toFixed(1)}" y1="${y0 - 2}" x2="${px.toFixed(1)}" y2="${yBot}" stroke="#22d3ee" stroke-width="1.6"/>` +
+    `<text class="pxlive-lbl" data-token="${escapeHtml(token)}" x="${px.toFixed(1)}" y="${(y0 - 18).toFixed(1)}" fill="#22d3ee" font-size="12" font-weight="700" text-anchor="middle">${escapeHtml(fmtPrice(map.price))}</text>`;
 
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" class="liqmap" data-token="${escapeHtml(token)}">` +
     zones + grid + bars + cumLine + xticks + priceLine + rAxis + `</svg>`;
@@ -191,12 +244,10 @@ function renderBacktestSvg(bt, token) {
     `<rect x="${px.toFixed(1)}" y="${y0}" width="${(x0 + plotW - px).toFixed(1)}" height="${plotH}" fill="#2ed5730a"/>`;
 
   // vertical sector lines only — each curve here is normalized to its own max, so
-  // horizontal cells would invite false cross-curve height comparisons
-  let grid = '';
-  for (let i = 1; i < 16; i++) {
-    const xx = x0 + (i / 16) * plotW;
-    grid += `<line x1="${xx.toFixed(1)}" y1="${y0}" x2="${xx.toFixed(1)}" y2="${yBot}" stroke="${i % 2 ? '#1a202e' : '#262e40'}"/>`;
-  }
+  // horizontal cells would invite false cross-curve height comparisons. Price-anchored
+  // at round % offsets, same ruler as the main map (axis is already offset space).
+  const vg = vGridlines(xOf, lo, hi, y0, yBot);
+  let grid = vg.g;
 
   // resting walls (raw model) — soft gray silhouette in the back ("where the fuel sits")
   const restingArea = `<path d="${areaPath(resting, restingMax, 0, bt.n - 1)}" fill="#8b93a7" fill-opacity="0.12"/>`;
@@ -207,15 +258,13 @@ function renderBacktestSvg(bt, token) {
   // real OI destroyed — bright cyan line (the ground truth)
   const realLine = `<path d="${linePathRange(real, bt.empMax, 0, bt.n - 1)}" fill="none" stroke="#22d3ee" stroke-width="2.2"/>`;
 
-  // x ticks in % from price
+  // x ticks in % from price — on the major gridlines, so labels name the grid itself
   let xticks = '';
-  const NX = 8;
-  for (let i = 0; i <= NX; i++) {
-    const off = lo + (i / NX) * (hi - lo);
-    const xx = xOf(off);
-    const lbl = (off >= 0 ? '+' : '') + (off * 100).toFixed(0) + '%';
+  for (const offPct of vg.majors) {
+    const xx = xOf(offPct / 100);
+    const lbl = (offPct > 0 ? '+' : offPct < 0 ? '−' : '') + (Math.abs(offPct) % 1 ? Math.abs(offPct).toFixed(1) : Math.abs(offPct)) + (offPct === 0 ? '' : '%');
     xticks += `<line x1="${xx.toFixed(1)}" y1="${yBot}" x2="${xx.toFixed(1)}" y2="${(yBot + 5).toFixed(1)}" stroke="#3a4152"/>` +
-      `<text x="${xx.toFixed(1)}" y="${(yBot + 17).toFixed(1)}" fill="#9ca3af" font-size="10" text-anchor="middle">${escapeHtml(lbl)}</text>`;
+      `<text x="${xx.toFixed(1)}" y="${(yBot + 17).toFixed(1)}" fill="#9ca3af" font-size="10" font-weight="${SEMANTIC_OFFS.includes(Math.abs(offPct)) || offPct === 0 ? '600' : '400'}" text-anchor="middle">${escapeHtml(lbl)}</text>`;
   }
   const priceLine =
     `<line x1="${px.toFixed(1)}" y1="${y0 - 2}" x2="${px.toFixed(1)}" y2="${yBot}" stroke="#e6e9ef" stroke-width="1.3" stroke-dasharray="4 3"/>` +
@@ -302,7 +351,7 @@ function renderToken(symbol, tokenData, isFirst) {
   const cum = cumulativeVolume(map);
   // crowding/squeeze read — never let it break the board
   let sq = null;
-  try { sq = computeSqueeze(map, tokenData, LIQ_DIR, symbol); } catch (e) { console.error(`squeeze failed for ${symbol}: ${e.message}`); }
+  try { sq = computeSqueeze(map, tokenData, LIQ_DIR, symbol, config); } catch (e) { console.error(`squeeze failed for ${symbol}: ${e.message}`); }
   const legend = map.tiers.map((t) =>
     `<span class="leg"><span class="sw" style="background:${t.color}"></span>${escapeHtml(t.label)}</span>`).join('') +
     `<span class="leg"><span class="sw" style="background:#f0f3f8;height:3px"></span>cumulative</span>`;
@@ -321,7 +370,7 @@ function renderToken(symbol, tokenData, isFirst) {
     <div>
       <h2>${escapeHtml(tokenData.name || symbol)} <span class="tk">${escapeHtml(symbol)}</span></h2>
       <div class="stats">
-        <span class="stat"><b>${escapeHtml(fmtPrice(map.price))}</b> price</span>
+        <span class="stat"><b class="pxnum" data-token="${escapeHtml(symbol)}">${escapeHtml(fmtPrice(map.price))}</b> price <span class="livedot" data-token="${escapeHtml(symbol)}" title="live price feed">&#9679;</span><span class="pxdelta" data-token="${escapeHtml(symbol)}"></span></span>
         ${winStat}
         <span class="stat"><b>${escapeHtml(fmtUsd(map.totalOiUsd))}</b> open interest</span>
         <span class="stat"><b>${escapeHtml(fmtUsd(map.displayedUsd))}</b> modeled in price range</span>
@@ -339,6 +388,7 @@ function renderToken(symbol, tokenData, isFirst) {
     <div class="legend">${legend}</div>
   </div>
   ${sq ? squeezeStrip(sq) : ''}
+  ${concentrationStrip(map.concentration)}
   ${renderSvg(symbol, map)}
   ${renderBacktest(bt, symbol)}
 </section>`;
@@ -359,18 +409,29 @@ function renderToken(symbol, tokenData, isFirst) {
       resting: bt.modelLong.map((v, i) => Math.round(v + bt.modelShort[i])),
     };
   }
-  return { html, payload, tab: { symbol, price: map.price } };
+  // live-price feed for the client-side WS overlay: prefer Binance ROUTED markPrice
+  // (/market/stream — the legacy /stream connects but never pushes), else Hyperliquid
+  // allMids (equity perps live under their builder dex, e.g. xyz:SPCX).
+  const hlSym = tokenCfg.hyperliquid ? String(tokenCfg.hyperliquid) : null;
+  const liveFeed = tokenCfg.binance ? { v: 'b', s: String(tokenCfg.binance).toLowerCase() }
+    : hlSym ? { v: 'h', s: hlSym, dex: hlSym.includes(':') ? hlSym.split(':')[0] : null }
+    : null;
+  const live = liveFeed ? { x0: 74, plotW: 1200 - 74 - 58, lo: map.range.lo, hi: map.range.hi, build: map.price, feed: liveFeed } : null;
+
+  return { html, payload, tab: { symbol, price: map.price }, live };
 }
 
 // ===== assemble =====
 const sections = [];
 const tabs = [];
 const payloads = {};
+const lives = {};
 Object.entries(tokens || {}).forEach(([symbol, tokenData], i) => {
-  const { html, payload, tab } = renderToken(symbol, tokenData, i === 0);
+  const { html, payload, tab, live } = renderToken(symbol, tokenData, i === 0);
   sections.push(html);
   tabs.push(tab);
   if (payload) payloads[symbol] = payload;
+  if (live) lives[symbol] = live;
 });
 const tabBar = tabs.length > 1
   ? `<div class="tabs">${tabs.map((t, i) => `<button class="tab${i === 0 ? ' active' : ''}" data-token="${escapeHtml(t.symbol)}">${escapeHtml(t.symbol)}${t.price != null ? `<span class="tprice">${escapeHtml(fmtPrice(t.price))}</span>` : ''}</button>`).join('')}</div>`
@@ -398,6 +459,7 @@ try {
 const payloadScripts = Object.entries(payloads)
   .map(([sym, p]) => `<script type="application/json" id="liqdata-${escapeHtml(sym)}">${JSON.stringify(p)}</script>`)
   .join('\n');
+const liveScript = `<script id="livecfg" type="application/json">${JSON.stringify(lives)}</script>`;
 
 const html = `<!DOCTYPE html>
 <html lang="en">
@@ -421,6 +483,9 @@ section { margin: 28px 0 34px; }
 .stats { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 6px; color: #9ca3af; font-size: 11px; }
 .stats .stat b { color: #e6e9ef; font-family: "SF Mono", monospace; font-weight: 600; }
 .stats .dim { color: #6b7280; font-family: "SF Mono", monospace; }
+.stats .livedot { color: #3f4654; font-size: 9px; margin-left: 5px; transition: color .25s; }
+.stats .livedot.on { color: #22d3ee; }
+.stats .pxdelta { font-family: "SF Mono", monospace; font-size: 10px; margin-left: 6px; }
 .legend { display: flex; gap: 12px; align-items: center; }
 .squeeze { display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; margin: 0 0 8px; padding: 7px 12px; border-radius: 5px; font-size: 12px; border: 1px solid #232838; background: #141823; }
 .squeeze .sqh { font-weight: 700; white-space: nowrap; }
@@ -429,6 +494,7 @@ section { margin: 28px 0 34px; }
 .squeeze.sq-long { border-color: #3a2027; background: #ff47570d; } .squeeze.sq-long .sqh { color: #ff8787; }
 .squeeze.sq-short { border-color: #1f3a28; background: #2ed5730d; } .squeeze.sq-short .sqh { color: #69db7c; }
 .squeeze.sq-neutral .sqh { color: #9ca3af; }
+.squeeze.conc { margin-top: -4px; font-size: 11.5px; background: #11141d; }
 .magnet { margin: 30px 0 0; background: #0d1019; border: 1px solid #1f2533; border-radius: 6px; padding: 14px 16px; }
 .magnet h3 { font-size: 13px; margin-bottom: 4px; }
 .magnet .sub { color: #6b7280; font-size: 11px; margin-bottom: 10px; }
@@ -482,7 +548,7 @@ footer code { color: #9ca3af; }
   </div>
   <div class="meta">Refreshed ${escapeHtml(new Date(fetchedAt).toLocaleString('en-US', { dateStyle: 'short', timeStyle: 'short' }))}</div>
 </header>
-<div class="note">Where leveraged positions would be force-liquidated, by price &amp; leverage tier — modeled from trading activity over the <b>time window</b> shown in each map's stats. Bars left of the price line = long liquidations (falling price), right = short (rising). The <b>white curve</b> is <b>cumulative liquidation volume</b> (right axis) — the running total wiped out if price sweeps from here to that level. Hover any price for the breakdown.</div>
+<div class="note">Where leveraged positions would be force-liquidated, by price &amp; leverage tier — modeled from trading activity over the <b>time window</b> shown in each map's stats. Bars left of the price line = long liquidations (falling price), right = short (rising). The <b>white curve</b> is <b>cumulative liquidation volume</b> (right axis) — the running total wiped out if price sweeps from here to that level. Hover any price for the breakdown. The <b style="color:#22d3ee">cyan price line</b> and header price update <b>live</b> (WebSocket); the bars/walls are a snapshot from the last model build.</div>
 ${errBlock}
 ${tabBar}
 ${sections.join('\n')}
@@ -494,6 +560,7 @@ ${magnetBlock}
 </footer>
 </div>
 ${payloadScripts}
+${liveScript}
 <div id="liq-tooltip" class="liq-tooltip" style="display:none"></div>
 <script>
 (function () {
@@ -559,6 +626,70 @@ ${payloadScripts}
       document.querySelectorAll('.board').forEach((b) => b.classList.toggle('active', b.dataset.token === tok));
     });
   });
+})();
+</script>
+<script>
+// ===== live price overlay: move the cyan price line + header price via exchange WebSockets =====
+// Walls/bars are a static snapshot; only price is live. Binance ROUTED markPrice (/market/stream)
+// for USDT perps; Hyperliquid allMids (per builder dex) for HL-only equity perps. No server, no
+// keys — the viewer's browser connects straight to the exchanges; auto-reconnects on drop.
+(function () {
+  var cfgEl = document.getElementById('livecfg');
+  if (!cfgEl) return;
+  var LIVE = {};
+  try { LIVE = JSON.parse(cfgEl.textContent || '{}'); } catch (_) { return; }
+  var fmtPrice = function (n) { return '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: n < 1 ? 4 : n < 100 ? 2 : 0 }); };
+  var last = {};
+  function setLineX(sym, x) {
+    document.querySelectorAll('.pxlive-line[data-token="' + sym + '"]').forEach(function (e) { e.setAttribute('x1', x); e.setAttribute('x2', x); });
+  }
+  function update(sym, px) {
+    var c = LIVE[sym]; if (!c || !(px > 0)) return;
+    last[sym] = Date.now();
+    var frac = (px - c.lo) / (c.hi - c.lo); if (frac < 0) frac = 0; else if (frac > 1) frac = 1;
+    var x = (c.x0 + frac * c.plotW).toFixed(1);
+    setLineX(sym, x);
+    document.querySelectorAll('.pxlive-lbl[data-token="' + sym + '"]').forEach(function (e) { e.setAttribute('x', x); e.textContent = fmtPrice(px); });
+    document.querySelectorAll('.pxnum[data-token="' + sym + '"]').forEach(function (e) { e.textContent = fmtPrice(px); });
+    document.querySelectorAll('.tab[data-token="' + sym + '"] .tprice').forEach(function (e) { e.textContent = fmtPrice(px); });
+    var dPct = c.build > 0 ? (px / c.build - 1) * 100 : 0;
+    document.querySelectorAll('.pxdelta[data-token="' + sym + '"]').forEach(function (e) {
+      e.textContent = (dPct >= 0 ? '+' : '') + dPct.toFixed(2) + '%'; e.style.color = dPct >= 0 ? '#51cf66' : '#ff8787';
+    });
+    document.querySelectorAll('.livedot[data-token="' + sym + '"]').forEach(function (e) { e.classList.add('on'); });
+  }
+  setInterval(function () {
+    var now = Date.now();
+    Object.keys(LIVE).forEach(function (sym) {
+      if (!last[sym] || now - last[sym] > 15000) document.querySelectorAll('.livedot[data-token="' + sym + '"]').forEach(function (e) { e.classList.remove('on'); });
+    });
+  }, 5000);
+
+  // Binance routed markPrice (USDT perps)
+  var bin = Object.keys(LIVE).filter(function (s) { return LIVE[s].feed.v === 'b'; });
+  if (bin.length) {
+    var bySym = {}; bin.forEach(function (s) { bySym[LIVE[s].feed.s] = s; });
+    var streams = bin.map(function (s) { return LIVE[s].feed.s + '@markPrice@1s'; }).join('/');
+    (function connect() {
+      var ws = new WebSocket('wss://fstream.binance.com/market/stream?streams=' + streams);
+      ws.onmessage = function (e) { try { var m = JSON.parse(e.data); var d = m.data || m; if (d && d.s) { var sym = bySym[String(d.s).toLowerCase()]; if (sym) update(sym, parseFloat(d.p)); } } catch (_) {} };
+      ws.onclose = function () { setTimeout(connect, 3000); };
+      ws.onerror = function () { try { ws.close(); } catch (_) {} };
+    })();
+  }
+
+  // Hyperliquid allMids (HL-only tokens, e.g. equity perps under a builder dex)
+  var hl = Object.keys(LIVE).filter(function (s) { return LIVE[s].feed.v === 'h'; });
+  if (hl.length) {
+    var dexes = {}; hl.forEach(function (s) { dexes[LIVE[s].feed.dex || ''] = 1; });
+    (function connect() {
+      var ws = new WebSocket('wss://api.hyperliquid.xyz/ws');
+      ws.onopen = function () { Object.keys(dexes).forEach(function (dex) { var sub = { type: 'allMids' }; if (dex) sub.dex = dex; ws.send(JSON.stringify({ method: 'subscribe', subscription: sub })); }); };
+      ws.onmessage = function (e) { try { var m = JSON.parse(e.data); if (m.channel === 'allMids' && m.data && m.data.mids) { var mids = m.data.mids; hl.forEach(function (s) { var v = mids[LIVE[s].feed.s]; if (v != null) update(s, parseFloat(v)); }); } } catch (_) {} };
+      ws.onclose = function () { setTimeout(connect, 3000); };
+      ws.onerror = function () { try { ws.close(); } catch (_) {} };
+    })();
+  }
 })();
 </script>
 </body>
