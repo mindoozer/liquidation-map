@@ -1,6 +1,11 @@
 #!/usr/bin/env node
-// Magnet study — forward test of the central liquidation-map trading thesis:
-// "price gets pulled toward large liquidation walls" (liquidity hunting).
+// Magnet study — a DIAGNOSTIC, not a trading thesis (decision 2026-09-16, see the liqmap
+// skill's `magnets` mode): per wall it answers "would price have reached this level anyway?"
+// The original thesis — "price gets pulled toward large liquidation walls" — was tested
+// 2026-06-13 → 2026-09-12: only BTC near-wall (<1%) attraction held across windows; the
+// far-wall verdict flips sign with the base-rate window (regime-sensitive by construction),
+// and the one independent month did not reproduce the July far-wall lift. Never present
+// pooled lift as evidence of an edge.
 //
 // Method: every V2 snapshot recorded the top-10 predicted walls at its timestamp.
 // For each snapshot older than the horizon (24h), check whether price subsequently

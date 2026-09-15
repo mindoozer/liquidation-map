@@ -96,21 +96,38 @@ and the dominant vote; flag if ETF is abstaining.
 Report offset% + $ notional, nearest first. Always pair with `magnets` lift before treating a
 wall as actionable — a big wall with ~0 lift is just where price already was.
 
-## magnets — does price get pulled to walls?
+## magnets — is this wall just where price was going anyway? (diagnostic, not a thesis)
 
-The central tradable thesis. Read `magnet.json` (or the rendered panel):
-`pooled[{bucket, n, touch, base, lift}]`, `lift = touch − base`.
-- **lift > 0** across enough samples → walls attract (signal).
-- **lift ≈ 0** → walls are just where price was going anyway (no edge).
-- **lift < 0** → repelled.
-**Pooled is a token-mix** — the 2026-08-15 shape review showed a pooled "distance shape" can
-be an artifact of which tokens populate each bucket. Check `cells[{tok, side, bucket, …}]`
-(per-token × above/below spot) before attributing anything to the pooled row.
-`firstSnapshot/lastSnapshot` = the window actually scored (post kline-coverage-gate); evidence
-accumulates via the `klines/` archive, so the window grows instead of rolling ~30d.
-Honesty rules baked into the study: tiny `n` is **low confidence — say it out loud**; the base
-rate controls for distance but **not regime**; walls <0.5% away are skipped. Confidence accrues
-with calendar time — never oversell early n.
+**Decision 2026-09-16 (user accepted the 09-12 review):** the magnet study is a *diagnostic*, not
+the central tradable thesis. It answers one question per wall — "would price have reached this
+level anyway?" — and nothing more. Never present pooled lift as evidence of an edge, never propose
+trading it with taker fills, and never promise that more months will settle it.
+
+Read `magnet.json` (or the rendered panel): `pooled[{bucket, n, touch, base, lift}]` and
+`cells[{tok, side, bucket, n, touch, base, lift}]`, `lift = touch − base`.
+- **lift ≈ 0 or < 0** → the wall is where price was going anyway / repelled — not a target.
+- **lift > 0 with n ≥ 20 in the CELL** → the wall attracted price in this window; context, not a trigger.
+
+**What is established (2026-06-13 → 2026-09-12):** the only cell that has held across windows is
+BTC near-wall (<1%) attraction — and it is exactly the cell the fade arms' cost gate discards, so
+it is untradeable without maker execution. The far-wall (5–10%) verdict is an artifact of the
+base-rate denominator: for identical walls and touches, ZEC-above 5–10% scored −5.8 / +11.0 /
++1.3 pp depending only on which kline series fed the excursion CDF; the one independent month
+(08-15 → 09-11) did not reproduce the July far-wall lift. The estimator is regime-sensitive by
+construction (base matched for distance, **not regime**) — accumulating months mixes regimes, it
+does not converge. Full record: `magnet-shape-review-2026-08-15.md` + the 2026-09-12 merge review.
+
+**Pooled is a token-mix** — check `cells` before attributing anything to a pooled row. Tiny `n` is
+**low confidence — say it out loud**; walls <0.5% away are skipped. `firstSnapshot/lastSnapshot` =
+the window actually scored (post kline-coverage-gate); the `klines/` archive (merged 2026-09-16)
+makes the window grow instead of rolling ~30d — an honest label, not more statistical power.
+
+**What the map IS for** (validated: walls line up with realized OI destruction, reach-weighted
+~60% BTC / ~82% ZEC; skew error 1–4 pts): a risk/context instrument — where other people's stops
+sit, how far cascade fuel extends each side, which side ignites first, who is crowded. Untested
+uses that would bear directly on real positions: (1) are stops placed just beyond a wall cluster
+swept more often than matched stops elsewhere? (2) does wall size predict realized cascade size?
+— (2) needs the Bybit-side fix in `collector.mjs` first (`liq-feed-audit-2026-09-05.md`).
 
 ## calibrate — fit tier weights (V4 discipline)
 
