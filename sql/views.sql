@@ -47,3 +47,12 @@ SELECT tok, t, px,
        round(w[2])           AS wall_usd,
        round(px * (1 + w[1] / 100.0), 4) AS wall_px
 FROM snaps, UNNEST(top) AS u(w);
+
+-- klines — archived hourly candles (magnet-study.mjs appends; data.json alone only spans ~30d).
+--   ts = epoch ms candle open; venue = the longest-kline venue the tick it was archived.
+CREATE OR REPLACE VIEW klines AS
+SELECT tok, venue, t AS ts,
+       to_timestamp(t / 1000.0) AS t,
+       o, h, l, c
+FROM read_json_auto('klines/[A-Z]*.jsonl',
+                    format='newline_delimited', union_by_name=true, sample_size=-1);
