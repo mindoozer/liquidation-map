@@ -448,11 +448,35 @@ try {
   const rows = (mg.pooled || []).map((b) =>
     `<tr><td>${escapeHtml(b.bucket)}</td><td>${b.n}</td><td>${b.n ? (b.touch * 100).toFixed(0) + '%' : '—'}</td><td>${b.n ? (b.base * 100).toFixed(0) + '%' : '—'}</td><td class="${b.n >= 20 ? (b.lift > 0 ? 'lift-pos' : 'lift-neg') : ''}">${b.n ? ((b.lift >= 0 ? '+' : '') + (b.lift * 100).toFixed(0) + 'pts') : '—'}</td></tr>`).join('');
   const perTok = Object.entries(mg.tokens || {}).map(([t, v]) => `${t} ${v.samples}`).join(' · ');
+  // per-token × per-side lift matrix — the pooled row is a token-mix; these cells aren't
+  let cellsBlock = '';
+  if ((mg.cells || []).length) {
+    const buckets = (mg.pooled || []).map((b) => b.bucket);
+    const byRow = new Map(); // 'TOK|side' → {bucket: cell}, insertion order = config token order
+    for (const c of mg.cells) {
+      const key = `${c.tok}|${c.side}`;
+      if (!byRow.has(key)) byRow.set(key, {});
+      byRow.get(key)[c.bucket] = c;
+    }
+    const cellRows = [...byRow.entries()].map(([key, row]) => {
+      const [tok, side] = key.split('|');
+      const tds = buckets.map((bk) => {
+        const c = row[bk];
+        if (!c || !c.n) return '<td>—</td>';
+        return `<td class="${c.n >= 20 ? (c.lift > 0 ? 'lift-pos' : 'lift-neg') : ''}" title="n=${c.n} · touch ${(c.touch * 100).toFixed(0)}% · base ${(c.base * 100).toFixed(0)}%">${(c.lift >= 0 ? '+' : '') + (c.lift * 100).toFixed(0)}</td>`;
+      }).join('');
+      return `<tr><td>${escapeHtml(tok)} ${side === 'above' ? '↑' : '↓'}</td>${tds}</tr>`;
+    }).join('');
+    cellsBlock = `<div class="sub" style="margin-top:12px">per token × side, lift in pts — ↑ walls above spot · ↓ below · uncolored = n&lt;20 · hover a cell for n/touch/base</div>
+  <table><tr><th></th>${buckets.map((b) => `<th>${escapeHtml(b)}</th>`).join('')}</tr>${cellRows}</table>`;
+  }
+  const win = `${(mg.firstSnapshot || '').slice(0, 10)} → ${(mg.lastSnapshot || '').slice(0, 10) || 'now'}`;
   magnetBlock = `<div class="magnet">
   <h3>Magnet study <span style="color:#6b7280;font-weight:400">— do predicted walls attract price? (forward test on wall snapshots, ${mg.horizonH}h horizon)</span></h3>
   <div class="sub">touch = price reached the wall level within ${mg.horizonH}h of the snapshot · base = probability of reaching that distance anyway (matched excursion CDF) · lift = touch − base</div>
   <table><tr><th>wall distance</th><th>walls</th><th>touched</th><th>base</th><th>lift</th></tr>${rows}</table>
-  <div class="note">⚠ read direction, not magnitude: 30-min snapshots with a ${mg.horizonH}h horizon overlap heavily, so the effective sample is far smaller than n. snapshots per token: ${escapeHtml(perTok)} · since ${escapeHtml((mg.firstSnapshot || '').slice(0, 10))} · the matched base rate controls for distance, not for regime — confidence accrues with calendar time.</div>
+  ${cellsBlock}
+  <div class="note">⚠ read direction, not magnitude: 30-min snapshots with a ${mg.horizonH}h horizon overlap heavily, so the effective sample is far smaller than n. snapshots per token: ${escapeHtml(perTok)} · scored window ${escapeHtml(win)} (only snapshots covered by archived klines count) · the matched base rate controls for distance, not for regime — confidence accrues with calendar time.</div>
 </div>`;
 } catch { /* no magnet.json yet */ }
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 # q "<SQL>" — run a read-only DuckDB query against the liquidation-map flat files,
-# with the canonical views (liqs · snaps · hourly_liqs · realized_skew · wall_history)
+# with the canonical views (liqs · snaps · hourly_liqs · realized_skew · wall_history · klines)
 # preloaded from sql/views.sql. Examples:
 #   ./q "FROM realized_skew"
 #   ./q "SELECT tok, count(*), max(t) FROM liqs GROUP BY tok"
